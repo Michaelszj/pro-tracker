@@ -4,6 +4,7 @@ import numpy as np
 import pickle
 from PIL import Image
 import glob
+import torch.nn.functional as F
 class LargeTensorDataset(torch.utils.data.Dataset):
     def __init__(self, tensor_file_paths, device='cuda'):
         self.tensor_file_paths = tensor_file_paths
@@ -17,6 +18,10 @@ class LargeTensorDataset(torch.utils.data.Dataset):
         return tensor
     
     
+    
+def resize_tensor(tensor, size):
+    return F.interpolate(tensor.permute(0, 3, 1, 2)/255., size=size, mode='bilinear', align_corners=True).permute(0, 2, 3, 1)*255.
+
 class pklDataset(torch.utils.data.Dataset):
     def __init__(self, pkl_file_path, device='cuda'):
         self.pkl_file_path = pkl_file_path
@@ -26,6 +31,7 @@ class pklDataset(torch.utils.data.Dataset):
         self.seqlen = len(self.data.keys())
         self.curidx = 0
         self.seqnames = list(self.data.keys())
+        self.switch_to(self.curidx)
         
     def curlen(self):
         return self.data[self.seqnames[self.curidx]]['video'].shape[0]
@@ -45,6 +51,7 @@ class pklDataset(torch.utils.data.Dataset):
     def switch_to(self, idx):
         self.curidx = idx
         print('Switched to sequence {}'.format(self.seqnames[self.curidx]))
+        self.data[self.seqnames[self.curidx]]['video'] = resize_tensor(resize_tensor(torch.from_numpy(self.data[self.seqnames[self.curidx]]['video']).to(self.device).float(),(256,256)),(512,512)).round().int().cpu().numpy()
         
 
     def __len__(self):

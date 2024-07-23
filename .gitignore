@@ -12,7 +12,9 @@
 /flowou_evals/
 cache/
 logs
+demo_in
 demo_out
 Makefile
 /train_files_lists/
 /runs/
+tapvid_davis

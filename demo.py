@@ -69,7 +69,7 @@ def run(args):
         sample = image_data[0]
         H,W = sample.shape[-3:-1]
         points, occluded = image_data.get_gt()
-        valid_points = (torch.from_numpy(points[:,0,])*torch.Tensor([W-1,H-1]))
+        valid_points = (torch.from_numpy(points[:,0,])*torch.Tensor([W,H]))
 
     if args.mask:
         logger.info("Using mask")
@@ -146,25 +146,43 @@ def run(args):
     
     if args.data_idx != -1:
         points, occluded = image_data.get_gt()
-        valid_points = (torch.from_numpy(points[:,0,[1,0]])*torch.Tensor([H-1,W-1])).long()
-        gt_trajectory = (torch.from_numpy(points[...,[1,0]])*torch.Tensor([H-1,W-1])).to(DEVICE)
+        gt_trajectory = (torch.from_numpy(points[...,[1,0]])*torch.Tensor([H,W])).to(DEVICE)
         gt_visibility = (~torch.from_numpy(occluded)).to(DEVICE)
         trajectory_vis = traj[0,:,:,[1,0]]
         visibility = visibility[0,:,:,0].permute(1,0)
         traj_diff = (trajectory_vis - gt_trajectory.permute(1,0,2)).norm(dim=-1).permute(1,0)
+        gt_visibility[gt_visibility[:,0] == False] = False
+        visibility[gt_visibility[:,0] == False] = False
         valid_locs = gt_visibility.int().sum()
-        thres_1 = torch.logical_and(traj_diff < 1,gt_visibility).int().sum()
-        thres_2 = torch.logical_and(traj_diff < 2,gt_visibility).int().sum()
-        thres_4 = torch.logical_and(traj_diff < 4,gt_visibility).int().sum()
-        thres_8 = torch.logical_and(traj_diff < 8,gt_visibility).int().sum()
-        thres_16 = torch.logical_and(traj_diff < 16,gt_visibility).int().sum()
-        occ_mistakes = torch.logical_and(visibility,~gt_visibility).int().sum()
+        
+        
+        # if gt_visibility[:,0].sum() < gt_visibility.shape[0]:
+        #     print("Some points are occluded")
+        #     import pdb; pdb.set_trace()
+        
+        scale = 2
+        both_visible = torch.logical_and(visibility,gt_visibility)
+        thres_1 = torch.logical_and(traj_diff < 1*scale,gt_visibility).int().sum()
+        thres_2 = torch.logical_and(traj_diff < 2*scale,gt_visibility).int().sum()
+        thres_4 = torch.logical_and(traj_diff < 4*scale,gt_visibility).int().sum()
+        thres_8 = torch.logical_and(traj_diff < 8*scale,gt_visibility).int().sum()
+        thres_16 = torch.logical_and(traj_diff < 16*scale,gt_visibility).int().sum()
+        occ_mistakes = torch.logical_and(visibility[gt_visibility[:,0] == True],~gt_visibility[gt_visibility[:,0] == True]).int().sum()
         total_locs = valid_locs + occ_mistakes
-        OA = (visibility == gt_visibility).float().mean()
+        OA = (visibility[gt_visibility[:,0] == True] == gt_visibility[gt_visibility[:,0] == True]).float().mean()
         print("Position accuracy:",thres_1/valid_locs,thres_2/valid_locs,thres_4/valid_locs,thres_8/valid_locs,thres_16/valid_locs)
         print("Average accuracy:", (thres_1+thres_2+thres_4+thres_8+thres_16)/5/valid_locs)
         print("Occlusion accuracy:",OA)
-        print("Average Jaccard:", (thres_1+thres_2+thres_4+thres_8+thres_16)/5/total_locs)
+        thres_1_j = torch.logical_and(traj_diff < 1*scale,both_visible).int().sum()
+        thres_2_j = torch.logical_and(traj_diff < 2*scale,both_visible).int().sum()
+        thres_4_j = torch.logical_and(traj_diff < 4*scale,both_visible).int().sum()
+        thres_8_j = torch.logical_and(traj_diff < 8*scale,both_visible).int().sum()
+        thres_16_j = torch.logical_and(traj_diff < 16*scale,both_visible).int().sum()
+        pred_valid_locs = visibility.int().sum()
+        def jaccard(x):
+            return x/(pred_valid_locs+valid_locs-x)
+        Average_Jaccard = (jaccard(thres_1_j)+jaccard(thres_2_j)+jaccard(thres_4_j)+jaccard(thres_8_j)+jaccard(thres_16_j))/5
+        print("Average Jaccard:", Average_Jaccard)
     
     if args.data_idx >= 0:
         with open(f'{video_save_path}/results.json','r') as f:
@@ -177,7 +195,7 @@ def run(args):
                                 '8':(thres_8/valid_locs).item(),
                                 '16':(thres_16/valid_locs).item(),
                                 'OA':OA.item(),
-                                'AJ':((thres_1+thres_2+thres_4+thres_8+thres_16)/5/total_locs).item()
+                                'AJ':Average_Jaccard.item()
                                 }
         results_dict.pop('average',None)
         results_dict['average'] = {
