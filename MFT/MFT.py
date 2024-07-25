@@ -19,7 +19,7 @@ class MFT():
         self.flower = config.flow_config.of_class(config.flow_config)  # init the OF
         self.device = 'cuda'
 
-    def init(self, img, start_frame_i=0, time_direction=1, flow_cache=None, **kwargs):
+    def init(self, img, start_frame_i=0, time_direction=1, flow_cache=None, query : torch.Tensor = None, **kwargs):
         """Initialize MFT on first frame
 
         args:
@@ -42,10 +42,10 @@ class MFT():
         self.memory = {
             self.start_frame_i: {
                 'img': img,
-                'result': FlowOUTrackingResult.identity((self.img_H, self.img_W), device=self.device)
+                'result': FlowOUTrackingResult.identity((1, query.shape[0]), device=self.device)
             }
         }
-
+        self.query = query.permute(1, 0).unsqueeze(1).to(self.device)
         self.template_img = img.copy()
 
         meta = SimpleNamespace()
@@ -102,7 +102,7 @@ class MFT():
                                                   read_cache=use_cache, write_cache=use_cache)
 
             chain_timer.start()
-            delta_results[delta] = chain_results(template_to_left, left_to_right)
+            delta_results[delta] = chain_results(template_to_left, left_to_right, self.query)
             already_used_left_ids.append(left_id)
             chain_timer.stop()
 
@@ -126,19 +126,19 @@ class MFT():
         best_flow = all_flows.gather(dim=0,
                                      index=einops.repeat(selected_delta_i,
                                                          'N_delta 1 H W -> N_delta xy H W',
-                                                         xy=2, H=self.img_H, W=self.img_W))
+                                                         xy=2))
         best_occlusions = all_occlusions.gather(dim=0, index=selected_delta_i)
         best_sigmas = all_sigmas.gather(dim=0, index=selected_delta_i)
         selected_flow, selected_occlusion, selected_sigmas = best_flow, best_occlusions, best_sigmas
 
-        selected_flow = einops.rearrange(selected_flow, '1 xy H W -> xy H W', xy=2, H=self.img_H, W=self.img_W)
-        selected_occlusion = einops.rearrange(selected_occlusion, '1 1 H W -> 1 H W', H=self.img_H, W=self.img_W)
-        selected_sigmas = einops.rearrange(selected_sigmas, '1 1 H W -> 1 H W', H=self.img_H, W=self.img_W)
+        selected_flow = einops.rearrange(selected_flow, '1 xy H W -> xy H W', xy=2)
+        selected_occlusion = einops.rearrange(selected_occlusion, '1 1 H W -> 1 H W')
+        selected_sigmas = einops.rearrange(selected_sigmas, '1 1 H W -> 1 H W')
 
         result = FlowOUTrackingResult(selected_flow, selected_occlusion, selected_sigmas)
 
         # mark flows pointing outside of the current image as occluded
-        invalid_mask = einops.rearrange(result.invalid_mask(), 'H W -> 1 H W')
+        invalid_mask = einops.rearrange(result.invalid_mask(self.img_H,self.img_W,self.query), 'H W -> 1 H W')
         result.occlusion[invalid_mask] = 1
         selection_timer.report()
 
@@ -230,10 +230,10 @@ def get_flowou_with_cache(flower, left_img, right_img, flow_init=None,
     return flowou
 
 
-def chain_results(left_result: FlowOUTrackingResult, right_result: FlowOUTrackingResult):
-    flow = left_result.chain(right_result.flow)
+def chain_results(left_result: FlowOUTrackingResult, right_result: FlowOUTrackingResult, query : torch.Tensor):
+    flow = left_result.chain(right_result.flow, query)
     occlusions = torch.maximum(left_result.occlusion,
-                               left_result.warp_backward(right_result.occlusion))
+                               left_result.warp_backward(right_result.occlusion, query))
     sigmas = torch.sqrt(torch.square(left_result.sigma) +
-                        torch.square(left_result.warp_backward(right_result.sigma)))
+                        torch.square(left_result.warp_backward(right_result.sigma, query)))
     return FlowOUTrackingResult(flow, occlusions, sigmas)

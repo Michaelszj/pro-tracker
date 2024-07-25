@@ -84,7 +84,7 @@ class FlowOUTrackingResult(object):
 
         return FlowOUTrackingResult(flow, occlusion=occlusion, sigma=sigma)
 
-    def chain(self, flow):
+    def chain(self, flow, query: torch.Tensor):
         """Chain 'flow' after our result.
 
         With 'self.flow' from A to B, and 'flow' from B to C, this
@@ -93,14 +93,16 @@ class FlowOUTrackingResult(object):
 
         args:
             flow: (xy H W) tensor with flow from B to C
+            query: (xy 1 N) tensor with query coordinates
         return:
             chained_flow: (xy H W) tensor with flow from A to C
         """
         device = flow.device
         flow_shape = einops.parse_shape(flow, 'xy H W')
         assert flow_shape['xy'] == 2
-        coords_A = torch_get_featuremap_coords((flow_shape['H'], flow_shape['W']),
-                                               device=device, keep_shape=True)
+        # coords_A = torch_get_featuremap_coords((flow_shape['H'], flow_shape['W']),
+        #                                        device=device, keep_shape=True)
+        coords_A = query
         coords_B = coords_A + self.flow.to(device).to(torch.float32)
         coords_B_normed = interpolation.normalize_coords(einops.rearrange(coords_B, 'xy H W -> 1 H W xy', xy=2),
                                                          flow_shape['H'], flow_shape['W'])
@@ -113,27 +115,30 @@ class FlowOUTrackingResult(object):
         chained_flow = einops.rearrange(flow_AC, '1 xy H W -> xy H W', xy=2)
         return chained_flow
 
-    def warp_backward(self, img):
+    def warp_backward(self, img, query : torch.Tensor):
         """Sample the img data using the right end of 'self.flow'
 
         args:
             img: (C, H, W) tensor
+            query: (xy 1 N) tensor with query coordinates
 
         return:
             img_sampled: (C, flow_H, flow_W) tensor
         """
         assert len(img.shape) == 3
-        assert img.shape[1:] == (self.H, self.W)
+        # assert img.shape[1:] == (self.H, self.W)
+        H, W = img.shape[1:]
         device = img.device
-        coords_A = torch_get_featuremap_coords((self.H, self.W), device=device, keep_shape=True)
+        # coords_A = torch_get_featuremap_coords((self.H, self.W), device=device, keep_shape=True)
+        coords_A = query
         coords_B = coords_A + self.flow.to(device).to(torch.float32)
         coords_B_normed = interpolation.normalize_coords(einops.rearrange(coords_B, 'xy H W -> 1 H W xy', xy=2),
-                                                         self.H, self.W)
+                                                         H, W)
 
         img_sampled = F.grid_sample(einops.rearrange(img, 'C H W -> 1 C H W'),
                                     coords_B_normed,
                                     align_corners=True)
-        return einops.rearrange(img_sampled, '1 C H W -> C H W', H=self.H, W=self.W)
+        return einops.rearrange(img_sampled, '1 C H W -> C H W')
 
     def warp_forward_points(self, points):
         """Warp the points using the stored optical flow.
@@ -143,6 +148,7 @@ class FlowOUTrackingResult(object):
         return:
             warped_points: (N xy) tensor with warped coordinates
         """
+        import pdb; pdb.set_trace()
         points = ensure_torch(points).to(torch.float32)
         N = points.shape[0]
         device = points.device
@@ -166,6 +172,7 @@ class FlowOUTrackingResult(object):
             sampled_occlusions: (1 N)
             sampled_sigmas: (1 N)
         """
+        import pdb; pdb.set_trace()
         points = ensure_torch(points).to(torch.float32)
         N = points.shape[0]
         device = points.device
@@ -247,19 +254,20 @@ class FlowOUTrackingResult(object):
 
         return warped_img.cpu().numpy()
 
-    def invalid_mask(self):
+    def invalid_mask(self, H, W, query):
         """Compute a mask of invalid self.flows, i.e. pointing outside of the image.
 
         returns:
             invalid_mask: (H, W) bool tensor, with True meaning the flow is invalid
         """
         device = self.flow.device
-        coords_A = torch_get_featuremap_coords((self.H, self.W), device=device, keep_shape=True)
+        # coords_A = torch_get_featuremap_coords((self.H, self.W), device=device, keep_shape=True)
+        coords_A = query
         coords_B = coords_A + self.flow.to(torch.float32)  # xy, H, W
 
         invalid_mask = torch.logical_or(
             torch.any(coords_B < 0, dim=0),
             torch.logical_or(
-                coords_B[0, :, :] >= self.W,
-                coords_B[1, :, :] >= self.H))
+                coords_B[0, :, :] >= W,
+                coords_B[1, :, :] >= H))
         return invalid_mask

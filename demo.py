@@ -70,7 +70,7 @@ def run(args):
         sample = image_data[0]
         H,W = sample.shape[-3:-1]
         points, occluded = image_data.get_gt()
-        valid_points = (torch.from_numpy(points[:,0,])*torch.Tensor([W,H]))
+        valid_points = (torch.from_numpy(points[:,0,])*torch.Tensor([W-1,H-1]))
 
     if args.mask:
         logger.info("Using mask")
@@ -93,21 +93,27 @@ def run(args):
         target = io_utils.get_video_frames(args.video)
         targetlen = io_utils.get_video_length(args.video)
         
+    current_frame = 0
     for frame in tqdm(target, total=targetlen):
         if not initialized:
-            meta = tracker.init(frame)
-            initialized = True
             if args.mask or args.data_idx >= 0:
                 queries = valid_points
             else:
                 queries = get_queries(frame.shape[:2], args.grid_spacing)
+            meta = tracker.init(frame, query = queries)
+            initialized = True
         else:
+            # if current_frame>=80: import pdb; pdb.set_trace()
             meta = tracker.track(frame)
 
-        coords, occlusions = convert_to_point_tracking(meta.result, queries)
+        coords = einops.rearrange(meta.result.flow, 'C H W -> (H W) C')
+        occlusions = einops.rearrange(meta.result.occlusion, '1 H W -> (H W)')
+        
+        # coords, occlusions = convert_to_point_tracking(meta.result, queries)
         result = meta.result
         result.cpu()
         results.append((result, coords, occlusions))
+        current_frame += 1
 
     edit = None
     if args.edit.exists():
@@ -136,7 +142,7 @@ def run(args):
     for frame_i, frame in enumerate(tqdm(target, total=targetlen)):
         result, coords, occlusions = results[frame_i]
         video.append(frame)
-        traj.append(coords)
+        traj.append(coords+queries)
         occ.append(occlusions)
         
     video = torch.from_numpy(np.stack(video)).cuda().permute(0,3,1,2)[:,[0,1,2]][None]
@@ -147,7 +153,7 @@ def run(args):
     
     if args.data_idx != -1:
         points, occluded = image_data.get_gt()
-        gt_trajectory = (torch.from_numpy(points[...,[1,0]])*torch.Tensor([H,W])).to(DEVICE)
+        gt_trajectory = (torch.from_numpy(points[...,[1,0]])*torch.Tensor([H-1,W-1])).to(DEVICE)
         gt_visibility = (~torch.from_numpy(occluded)).to(DEVICE)
         trajectory_vis = traj[0,:,:,[1,0]]
         visibility = visibility[0,:,:,0].permute(1,0)
