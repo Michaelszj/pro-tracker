@@ -230,7 +230,7 @@ def get_flowou_with_cache(flower, left_img, right_img, flow_init=None,
     return flowou
 
 
-def chain_results(left_result, right_result):
+def chain_results(left_result: FlowOUTrackingResult, right_result: FlowOUTrackingResult):
     flow = left_result.chain(right_result.flow)
     occlusions = torch.maximum(left_result.occlusion,
                                left_result.warp_backward(right_result.occlusion))

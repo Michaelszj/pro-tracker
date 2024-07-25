@@ -2,8 +2,8 @@ import numpy as np
 import einops
 from MFT.utils import interpolation
 from MFT.utils.misc import ensure_numpy
-
-def convert_to_point_tracking(MFT_result, queries):
+from MFT.results import FlowOUTrackingResult
+def convert_to_point_tracking(MFT_result : FlowOUTrackingResult, queries):
     """Convert MFT results to point-tracking results.
 
     args:

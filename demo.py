@@ -16,6 +16,7 @@ from MFT.point_tracking import convert_to_point_tracking
 import MFT.utils.vis_utils as vu
 import MFT.utils.io as io_utils
 from MFT.utils.misc import ensure_numpy
+from MFT.MFT import MFT
 from visualizer import Visualizer
 from PIL import Image
 from dataset import pklDataset
@@ -53,7 +54,7 @@ def parse_arguments():
 def run(args):
     config = load_config(args.config)
     logger.info("Loading tracker")
-    tracker = config.tracker_class(config)
+    tracker : MFT = config.tracker_class(config)
     logger.info("Tracker loaded")
     initialized = False
     queries = None
