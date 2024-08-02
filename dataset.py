@@ -23,14 +23,22 @@ def resize_tensor(tensor, size):
     return F.interpolate(tensor.permute(0, 3, 1, 2)/255., size=size, mode='bilinear', align_corners=True).permute(0, 2, 3, 1)*255.
 
 class pklDataset(torch.utils.data.Dataset):
-    def __init__(self, pkl_file_path, device='cuda'):
+    def __init__(self, pkl_file_path: str, device='cuda'):
         self.pkl_file_path = pkl_file_path
         self.device = device
         with open(self.pkl_file_path, 'rb') as f:
             self.data = pickle.load(f)
+        self.tapnet_path = os.path.join(os.path.dirname(self.pkl_file_path), 'save_dict_tapnet.pkl')
+        try:
+            with open(self.tapnet_path, 'rb') as f:
+                self.tapnet_data = pickle.load(f)
+        except:
+            self.tapnet_data = None
+            print('No TAPNet data found')
         self.seqlen = len(self.data.keys())
         self.curidx = 0
         self.seqnames = list(self.data.keys())
+        self.tapnames = list(self.tapnet_data.keys())
         self.switch_to(self.curidx)
         
     def curlen(self):
@@ -51,7 +59,10 @@ class pklDataset(torch.utils.data.Dataset):
     def switch_to(self, idx):
         self.curidx = idx
         print('Switched to sequence {}'.format(self.seqnames[self.curidx]))
-        self.data[self.seqnames[self.curidx]]['video'] = resize_tensor(resize_tensor(torch.from_numpy(self.data[self.seqnames[self.curidx]]['video']).to(self.device).float(),(256,256)),(512,512)).round().int().cpu().numpy()
+        H, W = self.data[self.seqnames[self.curidx]]['video'].shape[1:3]
+        new_size = (480,(480*W)//H)
+        self.data[self.seqnames[self.curidx]]['video'] = resize_tensor(resize_tensor(torch.from_numpy(self.data[self.seqnames[self.curidx]]['video']).to(self.device).float()
+                                                                                     ,(256,256)),new_size).round().int().cpu().numpy()
         
 
     def __len__(self):
@@ -63,6 +74,13 @@ class pklDataset(torch.utils.data.Dataset):
     
     def get_gt(self):
         return self.data[self.seqnames[self.curidx]]['points'], self.data[self.seqnames[self.curidx]]['occluded']
+    
+    def get_tapnet(self):
+        if self.tapnet_data is not None:
+            return self.tapnet_data[self.tapnames[self.curidx]]['track'], self.tapnet_data[self.tapnames[self.curidx]]['occlusion']
+        else:
+            return None, None
+    
     
     
 class ImageDataset(torch.utils.data.Dataset):

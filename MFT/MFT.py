@@ -38,7 +38,8 @@ class MFT():
         assert time_direction in [+1, -1]
         self.time_direction = time_direction
         self.flow_cache = flow_cache
-
+        self.targetlen = 0
+        self.reverse = False
         self.memory = {
             self.start_frame_i: {
                 'img': img,
@@ -113,9 +114,34 @@ class MFT():
                                                 active=self.C.timers_enabled)
         used_deltas = sorted(list(delta_results.keys()), key=lambda delta: 0 if np.isinf(delta) else delta)
         all_results = [delta_results[delta] for delta in used_deltas]
+        # if self.reverse:
+        #     all_results.append(self.memory[self.current_frame_i]['result'])
         all_flows = torch.stack([result.flow for result in all_results], dim=0)  # (N_delta, xy, H, W)
         all_sigmas = torch.stack([result.sigma for result in all_results], dim=0)  # (N_delta, 1, H, W)
         all_occlusions = torch.stack([result.occlusion for result in all_results], dim=0)  # (N_delta, 1, H, W)
+        
+        scores = -all_sigmas
+        scores[all_occlusions > self.C.occlusion_threshold] = -float('inf')
+
+        best = scores.max(dim=0, keepdim=True)
+        selected_delta_i = best.indices  # (1, 1, H, W)
+
+        best_flow = all_flows.gather(dim=0,
+                                     index=einops.repeat(selected_delta_i,
+                                                         'N_delta 1 H W -> N_delta xy H W',
+                                                         xy=2))
+        best_occlusions = all_occlusions.gather(dim=0, index=selected_delta_i)
+        best_sigmas = all_sigmas.gather(dim=0, index=selected_delta_i)
+        selected_flow, selected_occlusion, selected_sigmas = best_flow, best_occlusions, best_sigmas
+
+        selected_flow = einops.rearrange(selected_flow, '1 xy H W -> xy H W', xy=2)
+        selected_occlusion = einops.rearrange(selected_occlusion, '1 1 H W -> 1 H W')
+        selected_sigmas = einops.rearrange(selected_sigmas, '1 1 H W -> 1 H W')
+        
+        flow_distance = torch.sum(torch.square(all_flows - selected_flow), dim=1) # (N_delta, H, W)
+        flow_filter_threshold = 2
+        all_occlusions[:,0][flow_distance > flow_filter_threshold] = 1
+        
 
         occluded = all_occlusions > self.C.occlusion_threshold
         weight = 1/torch.square(all_sigmas)
@@ -127,26 +153,30 @@ class MFT():
         new_sigma = torch.zeros_like(sum_weight) # (1, H, W)
         new_sigma[sum_weight > 0] = 1/torch.sqrt(sum_weight[sum_weight > 0]) # (1, H, W)
         new_occlusion = (~(sum_weight > 0)).float() # (1, H, W)
-        # scores = -all_sigmas
-        # scores[all_occlusions > self.C.occlusion_threshold] = -float('inf')
-
-        # best = scores.max(dim=0, keepdim=True)
-        # selected_delta_i = best.indices  # (1, 1, H, W)
-
-        # best_flow = all_flows.gather(dim=0,
-        #                              index=einops.repeat(selected_delta_i,
-        #                                                  'N_delta 1 H W -> N_delta xy H W',
-        #                                                  xy=2))
-        # best_occlusions = all_occlusions.gather(dim=0, index=selected_delta_i)
-        # best_sigmas = all_sigmas.gather(dim=0, index=selected_delta_i)
-        # selected_flow, selected_occlusion, selected_sigmas = best_flow, best_occlusions, best_sigmas
-
-        # selected_flow = einops.rearrange(selected_flow, '1 xy H W -> xy H W', xy=2)
-        # selected_occlusion = einops.rearrange(selected_occlusion, '1 1 H W -> 1 H W')
-        # selected_sigmas = einops.rearrange(selected_sigmas, '1 1 H W -> 1 H W')
-
+        # import pdb;pdb.set_trace()
+        if self.reverse:
+            prev_result : FlowOUTrackingResult = self.memory[self.current_frame_i]['result']
+            prev_flow = prev_result.flow
+            prev_sigma = prev_result.sigma
+            prev_occlusion = prev_result.occlusion
+            change_mask = torch.logical_and(prev_occlusion[0] >= 1.-self.C.occlusion_threshold, new_occlusion[0] <= self.C.occlusion_threshold)
+            prev_flow[:,change_mask] = average_flow[:,change_mask]
+            prev_sigma[0,change_mask] = selected_sigmas[0,change_mask]
+            prev_occlusion[0,change_mask] = 0
+            # if self.current_frame_i == 30:
+            #     import pdb; pdb.set_trace()
+            average_flow = prev_flow
+            selected_sigmas = prev_sigma
+            new_sigma = prev_sigma
+            new_occlusion = prev_occlusion
+        
+        
+        
+        # if (selected_flow-average_flow).abs().max() > 1e-3:
+        #     import pdb; pdb.set_trace()
+        
         # result = FlowOUTrackingResult(selected_flow, selected_occlusion, selected_sigmas)
-        result = FlowOUTrackingResult(average_flow, new_occlusion, new_sigma)
+        result = FlowOUTrackingResult(average_flow, new_occlusion, selected_sigmas)
 
         # mark flows pointing outside of the current image as occluded
         invalid_mask = einops.rearrange(result.invalid_mask(self.img_H,self.img_W,self.query), 'H W -> 1 H W')
@@ -189,7 +219,7 @@ class MFT():
                 # ... will be needed later
                 continue
 
-            del self.memory[mem_frame_i]
+            # del self.memory[mem_frame_i]
 
     def is_before_start(self, frame_i):
         return ((self.time_direction > 0 and frame_i < self.start_frame_i) or  # forward
@@ -246,5 +276,5 @@ def chain_results(left_result: FlowOUTrackingResult, right_result: FlowOUTrackin
     occlusions = torch.maximum(left_result.occlusion,
                                left_result.warp_backward(right_result.occlusion, query))
     sigmas = torch.sqrt(torch.square(left_result.sigma) +
-                        torch.square(left_result.warp_backward(right_result.sigma**2, query)))
+                        torch.square(left_result.warp_backward(right_result.sigma, query)))
     return FlowOUTrackingResult(flow, occlusions, sigmas)
