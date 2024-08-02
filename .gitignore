@@ -18,3 +18,4 @@ Makefile
 /train_files_lists/
 /runs/
 tapvid_davis
+/davis_dino
