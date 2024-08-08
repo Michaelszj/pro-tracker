@@ -118,3 +118,20 @@ class ImageDataset(torch.utils.data.Dataset):
         return images
     
     
+class FeatureDataset(torch.utils.data.Dataset):
+    def __init__(self, feature_file, device='cuda'):
+        self.device = device
+        self.feature_file = feature_file
+        self.features: torch.Tensor = self.load_features()
+        self.featurelen = len(self.features)
+        
+    def __len__(self):
+        return self.featurelen
+
+    def __getitem__(self, idx):
+        return self.features[idx].to(self.device) # (C, H, W)
+
+    
+    def load_features(self):
+        features = torch.load(self.feature_file)
+        return features

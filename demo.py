@@ -19,7 +19,7 @@ from MFT.utils.misc import ensure_numpy
 from MFT.MFT import MFT
 from visualizer import Visualizer
 from PIL import Image
-from dataset import pklDataset
+from dataset import pklDataset, FeatureDataset
 import json
 DEVICE = 'cuda'
 
@@ -71,6 +71,8 @@ def run(args):
         H,W = sample.shape[-3:-1]
         points, occluded = image_data.get_gt()
         valid_points = (torch.from_numpy(points[:,0,])*torch.Tensor([W,H]))
+        occ_mask = torch.from_numpy(occluded[:,0,])
+        valid_points = valid_points[occ_mask == False,:]
 
     if args.mask:
         logger.info("Using mask")
@@ -83,7 +85,18 @@ def run(args):
         mask = torch.logical_and(mask,mod_mask)
         valid_points = torch.nonzero(mask)[...,[1,0]]
 
-
+    print("Loading feature tracker data")
+    # tapnet_traj, tapnet_occ = image_data.get_tapnet()
+    # tapnet_traj = torch.from_numpy(tapnet_traj).to(DEVICE).permute(0, 2, 1, 3)*2
+    # tapnet_visibility = ~torch.from_numpy(tapnet_occ).to(DEVICE).permute(0, 2, 1)[...,None]
+    dino_folder = './davis_dino/{:d}'.format(args.data_idx)
+    dino_traj = torch.from_numpy(np.load(os.path.join(dino_folder,'trajectories/trajectories_0.npy'))).to(DEVICE).permute(1, 0, 2)[None,...].to(DEVICE)
+    dino_traj = dino_traj*torch.Tensor([W/854,H/476]).to(DEVICE)
+    dino_visibility = ~torch.from_numpy(np.load(os.path.join(dino_folder,'occlusions/occlusion_preds_0.npy'))).to(DEVICE).permute(1, 0)[None,...,None]
+    
+    print("Loading feature data")
+    featdata = FeatureDataset(os.path.join(dino_folder,'dino_embeddings/refined_embed_video.pt'))
+    
     logger.info("Starting tracking")
     
     if args.data_idx >= 0:
@@ -102,7 +115,7 @@ def run(args):
                 queries = valid_points
             else:
                 queries = get_queries(frame.shape[:2], args.grid_spacing)
-            meta = tracker.init(frame, query = queries)
+            meta = tracker.init(frame, query = queries, dino_traj = dino_traj, dino_visibility = dino_visibility, featdata=featdata)
             initialized = True
         else:
             # if current_frame>=80: import pdb; pdb.set_trace()
@@ -166,15 +179,10 @@ def run(args):
     video = torch.from_numpy(np.stack(video)).cuda().permute(0,3,1,2)[:,[0,1,2]][None]
     traj = torch.from_numpy(np.stack(traj)).cuda()[None]
     visibility = (torch.from_numpy(np.stack(occ)).cuda()[None][...,None]) < 0.1
-    tapnet_traj, tapnet_occ = image_data.get_tapnet()
-    tapnet_traj = torch.from_numpy(tapnet_traj).to(DEVICE).permute(0, 2, 1, 3)*2
-    tapnet_visibility = ~torch.from_numpy(tapnet_occ).to(DEVICE).permute(0, 2, 1)[...,None]
-    dino_folder = './davis_dino/{:d}'.format(args.data_idx)
-    dino_traj = torch.from_numpy(np.load(os.path.join(dino_folder,'trajectories/trajectories_0.npy'))).to(DEVICE).permute(1, 0, 2)[None,...].to(DEVICE)
-    dino_visibility = ~torch.from_numpy(np.load(os.path.join(dino_folder,'occlusions/occlusion_preds_0.npy'))).to(DEVICE).permute(1, 0)[None,...,None]
+    
     # import pdb; pdb.set_trace()
-    traj = dino_traj
-    visibility = dino_visibility
+    # traj = dino_traj
+    # visibility = dino_visibility
     vis.visualize(video, traj, visibility,filename = f'{video_name}_points')
     
     
@@ -182,16 +190,21 @@ def run(args):
         points, occluded = image_data.get_gt()
         gt_trajectory = (torch.from_numpy(points[...,[1,0]])).to(DEVICE)
         gt_visibility = (~torch.from_numpy(occluded)).to(DEVICE)
-        our_H, our_W = 476, 854
-        trajectory_vis = traj[0,:,:,[1,0]]*torch.Tensor([1/our_H,1/our_W]).to(DEVICE)
+        our_H, our_W = H, W
+        trajectory_vis = traj[0,:,:,[1,0]]*torch.Tensor([1/our_H,1/our_W]).to(DEVICE).permute(1,0,2)
         visibility = visibility[0,:,:,0].permute(1,0)
         
-        gt_visibility[gt_visibility[:,0] == False] = False
+        # gt_visibility[gt_visibility[:,0] == False] = False
         # visibility[gt_visibility[:,0] == False] = False
         gt_trajectory = gt_trajectory[gt_visibility[:,0] == True]
         gt_visibility = gt_visibility[gt_visibility[:,0] == True]
+        
+        # import pdb; pdb.set_trace()
 
-        traj_diff = (trajectory_vis - gt_trajectory.permute(1,0,2)).norm(dim=-1).permute(1,0)
+        traj_diff = (trajectory_vis - gt_trajectory).norm(dim=-1) # (N, T)
+        gt_visibility = gt_visibility[:,1:]
+        visibility = visibility[:,1:]
+        traj_diff = traj_diff[:,1:]
         valid_locs = gt_visibility.int().sum()
         
         
