@@ -20,6 +20,7 @@ from MFT.MFT import MFT
 from visualizer import Visualizer
 from PIL import Image
 from dataset import pklDataset, FeatureDataset
+from eval_benchmark import eval_tapvid_frame
 import json
 DEVICE = 'cuda'
 
@@ -51,15 +52,96 @@ def parse_arguments():
     logging.getLogger("matplotlib").setLevel(logging.WARNING)
     return args
 
+def configure_benchmark(image_data: pklDataset, data_idx: int, frame_idx: int, direction: int = 1):
+    
+    dino_folder = './davis_dino/{:d}'.format(data_idx)
+    dino_traj = torch.from_numpy(np.load(os.path.join(dino_folder,f'trajectories/trajectories_{frame_idx}.npy'))).to(DEVICE).permute(1, 0, 2)[None,...].to(DEVICE)
+    dino_visibility = ~torch.from_numpy(np.load(os.path.join(dino_folder,f'occlusions/occlusion_preds_{frame_idx}.npy'))).to(DEVICE).permute(1, 0)[None,...,None]
+
+    featdata = FeatureDataset(os.path.join(dino_folder,'dino_embeddings/featup_embed_video.pt'))
+    image_data.set_start_frame(frame_idx, direction)
+    featdata.set_start_frame(frame_idx, direction)
+    if direction == 1:
+        dino_traj = dino_traj[:,frame_idx:]
+        dino_visibility = dino_visibility[:,frame_idx:]
+    else:
+        dino_traj = dino_traj[:,:frame_idx+1].flip(1)
+        dino_visibility = dino_visibility[:,:frame_idx+1].flip(1)
+    return dino_traj, dino_visibility, featdata
+    
+def track_slides(tracker: MFT, image_data: pklDataset, featdata: FeatureDataset, dino_traj, dino_visibility):
+    
+    initialized = False
+    # prepare query points
+    sample = image_data[0]
+    H,W = sample.shape[-3:-1]
+    points, occluded = image_data.get_gt()
+    valid_points = (torch.from_numpy(points[:,0,])*torch.Tensor([W,H]))
+    occ_mask = torch.from_numpy(occluded[:,0,])
+    valid_points = valid_points[occ_mask == False,:]
+    
+    # prepare image data
+    target = image_data
+    targetlen = len(target)
+    tracker.targetlen = targetlen
+    current_frame = 0
+    video = []
+    results = []
+    
+    # track forward
+    for frame in tqdm(target, total=targetlen):
+        video.append(frame)
+        if not initialized:
+            queries = valid_points
+            meta = tracker.init(frame, query = queries, dino_traj = dino_traj, dino_visibility = dino_visibility, featdata=featdata)
+            initialized = True
+        else:
+            # if current_frame>=80: import pdb; pdb.set_trace()
+            meta = tracker.track(frame)
+
+        coords = einops.rearrange(meta.result.flow, 'C H W -> (H W) C')
+        occlusions = einops.rearrange(meta.result.occlusion, '1 H W -> (H W)')
+        
+
+        result = meta.result
+        result.cpu()
+        results.append((result, coords, occlusions))
+        current_frame += 1
+        
+    # track backward
+    tracker.start_frame_i = targetlen - 1
+    tracker.time_direction = -1
+    tracker.reverse = True
+    current_frame -= 1
+    for frame in tqdm(reversed(video[1:-1]), total=targetlen-2):
+        current_frame -= 1
+
+        meta = tracker.track(frame)
+        coords = einops.rearrange(meta.result.flow, 'C H W -> (H W) C')
+        occlusions = einops.rearrange(meta.result.occlusion, '1 H W -> (H W)')
+        result = meta.result
+        result.cpu()
+        results[current_frame] = (result, coords, occlusions)
+    
+    # save results
+    traj = []
+    occ = []
+    
+    for frame_i, frame in enumerate(tqdm(target, total=targetlen)):
+        result, coords, occlusions = results[frame_i]
+        traj.append(coords+queries)
+        occ.append(occlusions)
+        
+    video = torch.from_numpy(np.stack(video)).cuda().permute(0,3,1,2)[:,[0,1,2]][None]
+    traj = torch.from_numpy(np.stack(traj)).cuda()[None]
+    visibility = (torch.from_numpy(np.stack(occ)).cuda()[None][...,None]) < 0.1
+    return video, traj, visibility
+    
 def run(args):
     config = load_config(args.config)
     logger.info("Loading tracker")
     tracker : MFT = config.tracker_class(config)
     logger.info("Tracker loaded")
-    initialized = False
-    queries = None
-
-    results = []
 
 
     if args.data_idx >= 0:
@@ -69,10 +151,10 @@ def run(args):
         curname = image_data.curname()
         sample = image_data[0]
         H,W = sample.shape[-3:-1]
-        points, occluded = image_data.get_gt()
-        valid_points = (torch.from_numpy(points[:,0,])*torch.Tensor([W,H]))
-        occ_mask = torch.from_numpy(occluded[:,0,])
-        valid_points = valid_points[occ_mask == False,:]
+    # else:
+    #     target = io_utils.get_video_frames(args.video)
+    #     targetlen = io_utils.get_video_length(args.video)
+        
 
     if args.mask:
         logger.info("Using mask")
@@ -85,188 +167,161 @@ def run(args):
         mask = torch.logical_and(mask,mod_mask)
         valid_points = torch.nonzero(mask)[...,[1,0]]
 
-    print("Loading feature tracker data")
-    # tapnet_traj, tapnet_occ = image_data.get_tapnet()
-    # tapnet_traj = torch.from_numpy(tapnet_traj).to(DEVICE).permute(0, 2, 1, 3)*2
-    # tapnet_visibility = ~torch.from_numpy(tapnet_occ).to(DEVICE).permute(0, 2, 1)[...,None]
-    dino_folder = './davis_dino/{:d}'.format(args.data_idx)
-    dino_traj = torch.from_numpy(np.load(os.path.join(dino_folder,'trajectories/trajectories_0.npy'))).to(DEVICE).permute(1, 0, 2)[None,...].to(DEVICE)
-    dino_traj = dino_traj*torch.Tensor([W/854,H/476]).to(DEVICE)
-    dino_visibility = ~torch.from_numpy(np.load(os.path.join(dino_folder,'occlusions/occlusion_preds_0.npy'))).to(DEVICE).permute(1, 0)[None,...,None]
     
-    print("Loading feature data")
-    featdata = FeatureDataset(os.path.join(dino_folder,'dino_embeddings/refined_embed_video.pt'))
+    # dino_traj, dino_visibility, featdata = configure_benchmark(image_data, args.data_idx, 0, 1)
+    # dino_traj = dino_traj*torch.Tensor([W/854,H/476]).to(DEVICE)
+    # logger.info("Starting tracking")
+    # video, traj, visibility = track_slides(tracker, image_data, featdata, dino_traj, dino_visibility)
     
-    logger.info("Starting tracking")
-    
-    if args.data_idx >= 0:
-        target = image_data
-        targetlen = len(target)
-    else:
-        target = io_utils.get_video_frames(args.video)
-        targetlen = io_utils.get_video_length(args.video)
-    tracker.targetlen = targetlen
-    current_frame = 0
-    video = []
-    for frame in tqdm(target, total=targetlen):
-        video.append(frame)
-        if not initialized:
-            if args.mask or args.data_idx >= 0:
-                queries = valid_points
-            else:
-                queries = get_queries(frame.shape[:2], args.grid_spacing)
-            meta = tracker.init(frame, query = queries, dino_traj = dino_traj, dino_visibility = dino_visibility, featdata=featdata)
-            initialized = True
-        else:
-            # if current_frame>=80: import pdb; pdb.set_trace()
-            meta = tracker.track(frame)
-
-        coords = einops.rearrange(meta.result.flow, 'C H W -> (H W) C')
-        occlusions = einops.rearrange(meta.result.occlusion, '1 H W -> (H W)')
         
-        # coords, occlusions = convert_to_point_tracking(meta.result, queries)
-        result = meta.result
-        result.cpu()
-        results.append((result, coords, occlusions))
-        current_frame += 1
-        
-    logger.info("Starting backward tracking")
-    tracker.start_frame_i = targetlen - 1
-    tracker.time_direction = -1
-    tracker.reverse = True
-    current_frame -= 1
-    for frame in tqdm(reversed(video[1:-1]), total=targetlen-2):
-        current_frame -= 1
-        # import pdb; pdb.set_trace()
-        meta = tracker.track(frame)
-        coords = einops.rearrange(meta.result.flow, 'C H W -> (H W) C')
-        occlusions = einops.rearrange(meta.result.occlusion, '1 H W -> (H W)')
-        result = meta.result
-        result.cpu()
-        results[current_frame] = (result, coords, occlusions)
-        # results.append((result, coords, occlusions))
-        
-
-    edit = None
-    if args.edit.exists():
-        edit = cv2.imread(str(args.edit), cv2.IMREAD_UNCHANGED)
-
-    logger.info("Drawing the results")
-    video_name = args.video.stem
-    if args.data_idx >= 0:
-        video_name = curname
-    video_save_path = args.out 
-    vis = Visualizer(video_save_path, pointwidth=1 if args.mask else 2)
-    
-    traj = []
-    occ = []
     
     
-    
-    
-    if args.data_idx >= 0:
-        target = image_data
-        targetlen = len(target)
-    else:
-        target = io_utils.get_video_frames(args.video)
-        targetlen = io_utils.get_video_length(args.video)
-        
-    for frame_i, frame in enumerate(tqdm(target, total=targetlen)):
-        result, coords, occlusions = results[frame_i]
-        traj.append(coords+queries)
-        occ.append(occlusions)
-        
-    video = torch.from_numpy(np.stack(video)).cuda().permute(0,3,1,2)[:,[0,1,2]][None]
-    traj = torch.from_numpy(np.stack(traj)).cuda()[None]
-    visibility = (torch.from_numpy(np.stack(occ)).cuda()[None][...,None]) < 0.1
-    
-    # import pdb; pdb.set_trace()
     # traj = dino_traj
     # visibility = dino_visibility
-    vis.visualize(video, traj, visibility,filename = f'{video_name}_points')
     
+    # logger.info("Drawing the results")
+    # video_name = args.video.stem
+    # if args.data_idx >= 0:
+    #     video_name = curname
     
+    # vis = Visualizer(video_save_path, pointwidth=1 if args.mask else 2)
+    # vis.visualize(video, traj, visibility,filename = f'{video_name}_points')
+    
+    query_first = True
     if args.data_idx != -1:
-        points, occluded = image_data.get_gt()
-        gt_trajectory = (torch.from_numpy(points[...,[1,0]])).to(DEVICE)
-        gt_visibility = (~torch.from_numpy(occluded)).to(DEVICE)
-        our_H, our_W = H, W
-        trajectory_vis = traj[0,:,:,[1,0]]*torch.Tensor([1/our_H,1/our_W]).to(DEVICE).permute(1,0,2)
-        visibility = visibility[0,:,:,0].permute(1,0)
+        video_frame = image_data.total_frames
+        eval_dicts = []
         
-        # gt_visibility[gt_visibility[:,0] == False] = False
-        # visibility[gt_visibility[:,0] == False] = False
-        gt_trajectory = gt_trajectory[gt_visibility[:,0] == True]
-        gt_visibility = gt_visibility[gt_visibility[:,0] == True]
-        
-        # import pdb; pdb.set_trace()
+        for i in range(0, video_frame, 1000 if query_first else 5):
+            print("Evaluating frame ", i)
+            if i != video_frame - 1:
+                try:
+                    dino_traj, dino_visibility, featdata = configure_benchmark(image_data, args.data_idx, i, 1)
+                    dino_traj = dino_traj*torch.Tensor([W/854,H/476]).to(DEVICE)
+                    video, traj, visibility = track_slides(tracker, image_data, featdata, dino_traj, dino_visibility)
+                    # traj = dino_traj
+                    # visibility = dino_visibility
+                    # import pdb; pdb.set_trace()
+                    if query_first:
+                        video_save_path = args.out 
+                        vis = Visualizer(video_save_path, pointwidth=1 if args.mask else 2)
+                        video_name = curname
 
-        traj_diff = (trajectory_vis - gt_trajectory).norm(dim=-1) # (N, T)
-        gt_visibility = gt_visibility[:,1:]
-        visibility = visibility[:,1:]
-        traj_diff = traj_diff[:,1:]
-        valid_locs = gt_visibility.int().sum()
+                        vis.visualize(video, traj, visibility,filename = f'{video_name}_points')
+                        
+                    points, occluded = image_data.get_gt()
+                    gt_trajectory = (torch.from_numpy(points[...,[1,0]])).to(DEVICE)
+                    gt_visibility = (~torch.from_numpy(occluded)).to(DEVICE)
+                    our_H, our_W = H, W
+                    trajectory_vis = (traj[0,:,:,[1,0]]*torch.Tensor([1/our_H,1/our_W]).to(DEVICE)).permute(1,0,2)
+                    visibility = visibility[0,:,:,0].permute(1,0)
+                    
+                    eval_dict = eval_tapvid_frame(trajectory_vis,visibility,gt_trajectory,gt_visibility,frame = i)
+                    eval_dicts.append(eval_dict)
+                    print(eval_dict)
+                except:
+                    print("Error in frame ", i)
+            if i != 0:
+                try:
+                    dino_traj, dino_visibility, featdata = configure_benchmark(image_data, args.data_idx, i, -1)
+                    dino_traj = dino_traj*torch.Tensor([W/854,H/476]).to(DEVICE)
+                    video, traj, visibility = track_slides(tracker, image_data, featdata, dino_traj, dino_visibility)
+                    # traj = dino_traj
+                    # visibility = dino_visibility
+                    
+                    points, occluded = image_data.get_gt()
+                    gt_trajectory = (torch.from_numpy(points[...,[1,0]])).to(DEVICE)
+                    gt_visibility = (~torch.from_numpy(occluded)).to(DEVICE)
+                    our_H, our_W = H, W
+                    trajectory_vis = (traj[0,:,:,[1,0]]*torch.Tensor([1/our_H,1/our_W]).to(DEVICE)).permute(1,0,2)
+                    visibility = visibility[0,:,:,0].permute(1,0)
+                    
+                    eval_dict = eval_tapvid_frame(trajectory_vis,visibility,gt_trajectory,gt_visibility,frame = i)
+                    eval_dicts.append(eval_dict)
+                    print(eval_dict)
+                except:
+                    print("Error in frame ", i)
+            
         
         
-        # if gt_visibility[:,0].sum() < gt_visibility.shape[0]:
-        #     print("Some points are occluded")
-        #     import pdb; pdb.set_trace()
+        eval_dict = combine_results(eval_dicts)
+        print(eval_dict)
+        video_save_path = args.out 
+        save_results(eval_dict,video_save_path,curname)
+
         
-        scale = 1/256.
-        both_visible = torch.logical_and(visibility,gt_visibility)
-        thres_1 = torch.logical_and(traj_diff < 1*scale,gt_visibility).int().sum()
-        thres_2 = torch.logical_and(traj_diff < 2*scale,gt_visibility).int().sum()
-        thres_4 = torch.logical_and(traj_diff < 4*scale,gt_visibility).int().sum()
-        thres_8 = torch.logical_and(traj_diff < 8*scale,gt_visibility).int().sum()
-        thres_16 = torch.logical_and(traj_diff < 16*scale,gt_visibility).int().sum()
-        occ_mistakes = torch.logical_and(visibility[gt_visibility[:,0] == True],~gt_visibility[gt_visibility[:,0] == True]).int().sum()
-        total_locs = valid_locs + occ_mistakes
-        OA = (visibility[gt_visibility[:,0] == True] == gt_visibility[gt_visibility[:,0] == True]).float().mean()
-        print("Position accuracy:",thres_1/valid_locs,thres_2/valid_locs,thres_4/valid_locs,thres_8/valid_locs,thres_16/valid_locs)
-        print("Average accuracy:", (thres_1+thres_2+thres_4+thres_8+thres_16)/5/valid_locs)
-        print("Occlusion accuracy:",OA)
-        thres_1_j = torch.logical_and(traj_diff < 1*scale,both_visible).int().sum()
-        thres_2_j = torch.logical_and(traj_diff < 2*scale,both_visible).int().sum()
-        thres_4_j = torch.logical_and(traj_diff < 4*scale,both_visible).int().sum()
-        thres_8_j = torch.logical_and(traj_diff < 8*scale,both_visible).int().sum()
-        thres_16_j = torch.logical_and(traj_diff < 16*scale,both_visible).int().sum()
-        pred_valid_locs = visibility.int().sum()
-        def jaccard(x):
-            return x/(pred_valid_locs+valid_locs-x)
-        Average_Jaccard = (jaccard(thres_1_j)+jaccard(thres_2_j)+jaccard(thres_4_j)+jaccard(thres_8_j)+jaccard(thres_16_j))/5
-        print("Average Jaccard:", Average_Jaccard)
-    
-    if args.data_idx >= 0:
-        with open(f'{video_save_path}/results.json','r') as f:
-            results_dict = json.load(f)
-        results_dict[curname] = {
-                                'total':((thres_1+thres_2+thres_4+thres_8+thres_16)/5/valid_locs).item(),
-                                '1':(thres_1/valid_locs).item(),
-                                '2':(thres_2/valid_locs).item(),
-                                '4':(thres_4/valid_locs).item(),
-                                '8':(thres_8/valid_locs).item(),
-                                '16':(thres_16/valid_locs).item(),
-                                'OA':OA.item(),
-                                'AJ':Average_Jaccard.item()
-                                }
-        results_dict.pop('average',None)
-        results_dict['average'] = {
-                                    'total':sum([v['total'] for v in results_dict.values()])/len(results_dict),
-                                    '1':sum([v['1'] for v in results_dict.values()])/len(results_dict),
-                                    '2':sum([v['2'] for v in results_dict.values()])/len(results_dict),
-                                    '4':sum([v['4'] for v in results_dict.values()])/len(results_dict),
-                                    '8':sum([v['8'] for v in results_dict.values()])/len(results_dict),
-                                    '16':sum([v['16'] for v in results_dict.values()])/len(results_dict),
-                                    'OA':sum([v['OA'] for v in results_dict.values()])/len(results_dict),
-                                    'AJ':sum([v['AJ'] for v in results_dict.values()])/len(results_dict)
-                                    }
-        with open(f'{video_save_path}/results.json','w') as f:
-            json.dump(results_dict,f,indent=4)
-    
     
     return 0
 
+def combine_results(eval_dicts):
+    eval_dict = {}
+    eval_dict['thres_1'] = sum([v['thres_1'] for v in eval_dicts])
+    eval_dict['thres_2'] = sum([v['thres_2'] for v in eval_dicts])
+    eval_dict['thres_4'] = sum([v['thres_4'] for v in eval_dicts])
+    eval_dict['thres_8'] = sum([v['thres_8'] for v in eval_dicts])
+    eval_dict['thres_16'] = sum([v['thres_16'] for v in eval_dicts])
+    eval_dict['gt_visible'] = sum([v['gt_visible'] for v in eval_dicts])
+    eval_dict['thres_1_rate'] = eval_dict['thres_1']/eval_dict['gt_visible']
+    eval_dict['thres_2_rate'] = eval_dict['thres_2']/eval_dict['gt_visible']
+    eval_dict['thres_4_rate'] = eval_dict['thres_4']/eval_dict['gt_visible']
+    eval_dict['thres_8_rate'] = eval_dict['thres_8']/eval_dict['gt_visible']
+    eval_dict['thres_16_rate'] = eval_dict['thres_16']/eval_dict['gt_visible']
+    eval_dict['average_rate'] = (eval_dict['thres_1']+eval_dict['thres_2']+eval_dict['thres_4']+eval_dict['thres_8']+eval_dict['thres_16'])/eval_dict['gt_visible']/5
+    eval_dict['occlusion_correct'] = sum([v['occlusion_correct'] for v in eval_dicts])
+    eval_dict['occlusion_vv'] = sum([v['occlusion_vv'] for v in eval_dicts])
+    eval_dict['occlusion_vn'] = sum([v['occlusion_vn'] for v in eval_dicts])
+    eval_dict['occlusion_nv'] = sum([v['occlusion_nv'] for v in eval_dicts])
+    eval_dict['occlusion_nn'] = sum([v['occlusion_nn'] for v in eval_dicts])
+    eval_dict['total_points'] = sum([v['total_points'] for v in eval_dicts])
+    eval_dict['OA'] = eval_dict['occlusion_correct']/eval_dict['total_points']
+    eval_dict['pred_visible'] = sum([v['pred_visible'] for v in eval_dicts])
+    eval_dict['jaccard_1'] = sum([v['jaccard_1'] for v in eval_dicts])
+    eval_dict['jaccard_2'] = sum([v['jaccard_2'] for v in eval_dicts])
+    eval_dict['jaccard_4'] = sum([v['jaccard_4'] for v in eval_dicts])
+    eval_dict['jaccard_8'] = sum([v['jaccard_8'] for v in eval_dicts])
+    eval_dict['jaccard_16'] = sum([v['jaccard_16'] for v in eval_dicts])
+    def jaccard(x):
+        return x/(eval_dict['pred_visible']+eval_dict['gt_visible']-x)
+    eval_dict['AJ'] = (jaccard(eval_dict['jaccard_1'])+jaccard(eval_dict['jaccard_2'])+jaccard(eval_dict['jaccard_4'])+jaccard(eval_dict['jaccard_8'])+jaccard(eval_dict['jaccard_16']))/5
+    return eval_dict
 
+
+def save_results(eval_dict, video_save_path, curname):
+    with open(f'{video_save_path}/results.json','r') as f:
+        results_dict = json.load(f)
+    results_dict[curname] = {
+                            'total':eval_dict['average_rate'],
+                            '1':eval_dict['thres_1_rate'],
+                            '2':eval_dict['thres_2_rate'],
+                            '4':eval_dict['thres_4_rate'],
+                            '8':eval_dict['thres_8_rate'],
+                            '16':eval_dict['thres_16_rate'],
+                            'occ_vv':eval_dict['occlusion_vv'],
+                            'occ_vn':eval_dict['occlusion_vn'],
+                            'occ_nv':eval_dict['occlusion_nv'],
+                            'occ_nn':eval_dict['occlusion_nn'],
+                            'OA':eval_dict['OA'],
+                            'AJ':eval_dict['AJ']
+                            }
+    results_dict.pop('average',None)
+    results_dict['average'] = {
+                                'total':sum([v['total'] for v in results_dict.values()])/len(results_dict),
+                                '1':sum([v['1'] for v in results_dict.values()])/len(results_dict),
+                                '2':sum([v['2'] for v in results_dict.values()])/len(results_dict),
+                                '4':sum([v['4'] for v in results_dict.values()])/len(results_dict),
+                                '8':sum([v['8'] for v in results_dict.values()])/len(results_dict),
+                                '16':sum([v['16'] for v in results_dict.values()])/len(results_dict),
+                                'occ_vv':sum([v['occ_vv'] for v in results_dict.values() if v.get('occ_vv') is not None]),
+                                'occ_vn':sum([v['occ_vn'] for v in results_dict.values() if v.get('occ_vn') is not None]),
+                                'occ_nv':sum([v['occ_nv'] for v in results_dict.values() if v.get('occ_nv') is not None]),
+                                'occ_nn':sum([v['occ_nn'] for v in results_dict.values() if v.get('occ_nn') is not None]),
+                                'OA':sum([v['OA'] for v in results_dict.values()])/len(results_dict),
+                                'AJ':sum([v['AJ'] for v in results_dict.values()])/len(results_dict)
+                                }
+    with open(f'{video_save_path}/results.json','w') as f:
+        json.dump(results_dict,f,indent=4)
+        
+        
 def get_queries(frame_shape, spacing):
     H, W = frame_shape
     xs = np.arange(0, W, spacing)

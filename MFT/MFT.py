@@ -140,9 +140,8 @@ class MFT():
         input_queries = (all_flows + self.query).permute(2,1,0,3)[0]
         sampled_features = self.sample_features(input_queries) # (C, N_delta, N)
         similarities = (sampled_features * self.query_features).sum(dim=0)[:,None,None,:] # (N_delta, 1, H, W)
-        similarity_threshold = 0.5
+        similarity_threshold = 0.7324
         all_occlusions[similarities < similarity_threshold] = 1
-        # import pdb; pdb.set_trace()
         
         scores = -all_sigmas
         scores[all_occlusions > self.C.occlusion_threshold] = -float('inf')
@@ -185,7 +184,7 @@ class MFT():
             prev_occlusion = prev_result.occlusion
             change_mask = torch.logical_and(prev_occlusion[0] >= 1.-self.C.occlusion_threshold, new_occlusion[0] <= self.C.occlusion_threshold)
             prev_flow[:,change_mask] = average_flow[:,change_mask]
-            prev_sigma[0,change_mask] = new_sigma[0,change_mask]
+            prev_sigma[0,change_mask] = selected_sigmas[0,change_mask]
             prev_occlusion[0,change_mask] = 0
             # if self.current_frame_i == 30:
             #     import pdb; pdb.set_trace()
@@ -204,7 +203,7 @@ class MFT():
         dino_flow = (self.dino_traj[0,self.current_frame_i]-self.dino_traj[0,0]).permute(1, 0).unsqueeze(1).to(self.device)
         dino_occlusion = (~self.dino_visibility[0,self.current_frame_i].permute(1, 0).unsqueeze(1).to(self.device)).float()
         
-        
+        # import pdb; pdb.set_trace()
         last_flow = self.memory[self.current_frame_i-self.time_direction]['result'].flow
         last_occlusion = self.memory[self.current_frame_i-self.time_direction]['result'].occlusion
         flow_consistency_threshold = 0
@@ -213,9 +212,9 @@ class MFT():
         replace_mask = torch.logical_and(dino_occlusion[0] == 0, new_occlusion[0] == 1).squeeze()
         flow_mask = (new_occlusion[0] == 1).squeeze()
         average_flow[:,:,flow_mask] = dino_flow[:,:,flow_mask]
-        new_sigma[:,:,replace_mask] = 0
+        selected_sigmas[:,:,replace_mask] = 0
         new_occlusion[:,:,replace_mask] = 0
-        result = FlowOUTrackingResult(average_flow, new_occlusion, new_sigma)
+        result = FlowOUTrackingResult(average_flow, new_occlusion, selected_sigmas)
         # replace_mask = torch.logical_and(dino_occlusion[0] == 1, new_occlusion[0] == 0).squeeze()
         # dino_flow[:,:,replace_mask] = average_flow[:,:,replace_mask]
         # dino_occlusion[:,:,replace_mask] = 0

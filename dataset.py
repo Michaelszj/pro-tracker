@@ -39,41 +39,53 @@ class pklDataset(torch.utils.data.Dataset):
         self.curidx = 0
         self.seqnames = list(self.data.keys())
         self.tapnames = list(self.tapnet_data.keys())
+        self.current_data = None
+        self.total_frames = 0
         self.switch_to(self.curidx)
+        self.start_frame = 0
+        self.direction = 1
+        
+        
         
     def curlen(self):
-        return self.data[self.seqnames[self.curidx]]['video'].shape[0]
+        return self.current_data.shape[0]
     
     def curname(self):
         return self.seqnames[self.curidx]
     
-    def to_cuda(self):
-        try:
-            self.data[self.seqnames[self.curidx]]['video'] = torch.from_numpy(self.data[self.seqnames[self.curidx]]['video']).to(self.device).float()
-        except:
-            self.data[self.seqnames[self.curidx]]['video'] = self.data[self.seqnames[self.curidx]]['video'].to(self.device)
-        
-    def to_cpu(self):
-        self.data[self.seqnames[self.curidx]]['video'] = self.data[self.seqnames[self.curidx]]['video'].to('cpu')
         
     def switch_to(self, idx):
         self.curidx = idx
         print('Switched to sequence {}'.format(self.seqnames[self.curidx]))
         H, W = self.data[self.seqnames[self.curidx]]['video'].shape[1:3]
         new_size = (480,(480*W)//H)
-        self.data[self.seqnames[self.curidx]]['video'] = resize_tensor(resize_tensor(torch.from_numpy(self.data[self.seqnames[self.curidx]]['video']).to(self.device).float()
+        self.current_data = resize_tensor(resize_tensor(torch.from_numpy(self.data[self.seqnames[self.curidx]]['video']).to(self.device).float()
                                                                                      ,(256,256)),new_size).round().int().cpu().numpy()
+        self.total_frames = self.current_data.shape[0]
         
+    def set_start_frame(self, frame, direction):
+        self.switch_to(self.curidx)
+        self.start_frame = frame
+        self.direction = direction
+        if direction == 1:
+            self.current_data = self.current_data[self.start_frame:]
+        else:
+            self.current_data = self.current_data[:self.start_frame+1][::-1]
 
     def __len__(self):
         return self.curlen()
 
     def __getitem__(self, idx):
         
-        return self.data[self.seqnames[self.curidx]]['video'][idx]
+        return self.current_data[idx]
     
     def get_gt(self):
-        return self.data[self.seqnames[self.curidx]]['points'], self.data[self.seqnames[self.curidx]]['occluded']
+        points, occluded = self.data[self.seqnames[self.curidx]]['points'], self.data[self.seqnames[self.curidx]]['occluded']
+        if self.direction == 1:
+            return points[:,self.start_frame:], occluded[:,self.start_frame:]
+        else:
+            return points[:,:self.start_frame+1][:,::-1].copy(), occluded[:,:self.start_frame+1][:,::-1].copy()
+        # return self.data[self.seqnames[self.curidx]]['points'], self.data[self.seqnames[self.curidx]]['occluded']
     
     def get_tapnet(self):
         if self.tapnet_data is not None:
@@ -124,6 +136,8 @@ class FeatureDataset(torch.utils.data.Dataset):
         self.feature_file = feature_file
         self.features: torch.Tensor = self.load_features()
         self.featurelen = len(self.features)
+        self.start_frame = 0
+        self.direction = 1
         
     def __len__(self):
         return self.featurelen
@@ -135,3 +149,11 @@ class FeatureDataset(torch.utils.data.Dataset):
     def load_features(self):
         features = torch.load(self.feature_file)
         return features
+    
+    def set_start_frame(self, frame, direction):
+        self.start_frame = frame
+        self.direction = direction
+        if direction == 1:
+            self.features = self.features[self.start_frame:]
+        else:
+            self.features = self.features[:self.start_frame+1].flip(0)

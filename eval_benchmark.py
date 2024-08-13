@@ -7,15 +7,14 @@ def eval_tapvid_frame(pred_traj: torch.Tensor = None,pred_vis: torch.Tensor = No
     # gt_traj: (N, T, 2)
     # gt_vis: (N, T)
     
-    gt_traj = gt_trajectory[gt_visibility[:,frame] == True]
-    gt_vis = gt_visibility[gt_visibility[:,frame] == True]
+    gt_traj = gt_trajectory[gt_visibility[:,0] == True]
+    gt_vis = gt_visibility[gt_visibility[:,0] == True]
     traj_diff = (pred_traj - gt_traj).norm(dim=-1) # (N', T)
     
-    eval_frames = [i for i in range(gt_traj.shape[-1]) if i != frame]
+    eval_frames = [i for i in range(gt_traj.shape[1]) if i != 0]
     traj_diff = traj_diff[:,eval_frames] # (N', T-1)
-    gt_traj = gt_traj[:,eval_frames]
+    pred_vis = pred_vis[:,eval_frames]
     gt_vis = gt_vis[:,eval_frames]
-    
     
     eval_dict = {}
     valid_locs = gt_vis.int().sum()
@@ -60,13 +59,13 @@ def eval_tapvid_frame(pred_traj: torch.Tensor = None,pred_vis: torch.Tensor = No
     def jaccard(x):
         return x/(pred_valid_locs+valid_locs-x)
     
-    eval_dict['valid_locs'] = valid_locs.item()
-    eval_dict['pred_valid_locs'] = pred_valid_locs.item()
+    # eval_dict['valid_locs'] = valid_locs.item()
+    eval_dict['pred_visible'] = pred_valid_locs.item()
     eval_dict['jaccard_1'] = jaccard_1.item()
     eval_dict['jaccard_2'] = jaccard_2.item()
     eval_dict['jaccard_4'] = jaccard_4.item()
     eval_dict['jaccard_8'] = jaccard_8.item()
     eval_dict['jaccard_16'] = jaccard_16.item()
-    eval_dict['AJ'] = (jaccard(jaccard_1)+jaccard(jaccard_2)+jaccard(jaccard_4)+jaccard(jaccard_8)+jaccard(jaccard_16))/5
+    eval_dict['AJ'] = ((jaccard(jaccard_1)+jaccard(jaccard_2)+jaccard(jaccard_4)+jaccard(jaccard_8)+jaccard(jaccard_16))/5).item()
     
     return eval_dict
