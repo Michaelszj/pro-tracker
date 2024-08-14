@@ -58,7 +58,7 @@ def configure_benchmark(image_data: pklDataset, data_idx: int, frame_idx: int, d
     dino_traj = torch.from_numpy(np.load(os.path.join(dino_folder,f'trajectories/trajectories_{frame_idx}.npy'))).to(DEVICE).permute(1, 0, 2)[None,...].to(DEVICE)
     dino_visibility = ~torch.from_numpy(np.load(os.path.join(dino_folder,f'occlusions/occlusion_preds_{frame_idx}.npy'))).to(DEVICE).permute(1, 0)[None,...,None]
 
-    featdata = FeatureDataset(os.path.join(dino_folder,'dino_embeddings/featup_embed_video.pt'))
+    featdata = FeatureDataset(os.path.join(dino_folder,'dino_embeddings/sam2_mask/all_mask.pt'))
     image_data.set_start_frame(frame_idx, direction)
     featdata.set_start_frame(frame_idx, direction)
     if direction == 1:

@@ -134,7 +134,7 @@ class FeatureDataset(torch.utils.data.Dataset):
     def __init__(self, feature_file, device='cuda'):
         self.device = device
         self.feature_file = feature_file
-        self.features: torch.Tensor = self.load_features()
+        self.features: torch.Tensor = self.load_features().permute(2,1,0,3,4)[0].float()
         self.featurelen = len(self.features)
         self.start_frame = 0
         self.direction = 1

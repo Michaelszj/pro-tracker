@@ -65,7 +65,7 @@ class MFT():
         normalized_query = (query.permute(1,2,0) / torch.Tensor([self.img_W, self.img_H]).to(self.device)) * 2 - 1 # (1, N, xy)
         featmap = self.featdata[self.current_frame_i] # (C, H, W)
         sampled_features = torch.nn.functional.grid_sample(featmap.unsqueeze(0), normalized_query.unsqueeze(0), mode='bilinear', align_corners=True)[0] # (C, 1, N)
-        normalized_features = sampled_features / torch.norm(sampled_features, dim=0, keepdim=True)
+        normalized_features = sampled_features # / torch.norm(sampled_features, dim=0, keepdim=True)
         return normalized_features
         
         
@@ -137,11 +137,17 @@ class MFT():
         all_occlusions = torch.stack([result.occlusion for result in all_results], dim=0)  # (N_delta, 1, H, W)
         # all_occlusions[all_sigmas > 1] = 1
         
-        input_queries = (all_flows + self.query).permute(2,1,0,3)[0]
+        input_queries = (all_flows + self.query).permute(2,1,0,3)[0] # (xy, N_delta, N)
         sampled_features = self.sample_features(input_queries) # (C, N_delta, N)
-        similarities = (sampled_features * self.query_features).sum(dim=0)[:,None,None,:] # (N_delta, 1, H, W)
-        similarity_threshold = 0.7324
-        all_occlusions[similarities < similarity_threshold] = 1
+        sampled_features = sampled_features.diagonal(dim1=0,dim2=2) # (N_delta, N)
+        # import pdb; pdb.set_trace()
+        # similarities = (sampled_features * self.query_features).sum(dim=0)[:,None,None,:] # (N_delta, 1, H, W)
+        # similarity_threshold = 0.5
+        
+        # all_occlusions[similarities < similarity_threshold] = 1
+        
+        mask_thres = 0.5
+        all_occlusions[sampled_features[:,None,None,:] < mask_thres] = 1
         
         scores = -all_sigmas
         scores[all_occlusions > self.C.occlusion_threshold] = -float('inf')
