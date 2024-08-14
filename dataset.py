@@ -131,10 +131,12 @@ class ImageDataset(torch.utils.data.Dataset):
     
     
 class FeatureDataset(torch.utils.data.Dataset):
-    def __init__(self, feature_file, device='cuda'):
+    def __init__(self, feature_file, device='cuda',type = 'feature'):
         self.device = device
         self.feature_file = feature_file
-        self.features: torch.Tensor = self.load_features().permute(2,1,0,3,4)[0].float()
+        self.features: torch.Tensor = self.load_features()# .permute(2,1,0,3,4)[0].float()
+        if type == 'mask':
+            self.features = self.features.permute(2,1,0,3,4)[0].float()
         self.featurelen = len(self.features)
         self.start_frame = 0
         self.direction = 1
