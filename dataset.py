@@ -137,6 +137,7 @@ class FeatureDataset(torch.utils.data.Dataset):
         self.features: torch.Tensor = self.load_features()# .permute(2,1,0,3,4)[0].float()
         if type == 'mask':
             self.features = self.features.permute(2,1,0,3,4)[0].float()
+        # import pdb; pdb.set_trace()
         self.featurelen = len(self.features)
         self.start_frame = 0
         self.direction = 1

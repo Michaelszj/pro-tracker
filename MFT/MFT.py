@@ -20,7 +20,8 @@ class MFT():
         self.device = 'cuda'
 
     def init(self, img, start_frame_i=0, time_direction=1, flow_cache=None, query : torch.Tensor = None, 
-             dino_traj: torch.Tensor = None, dino_visibility: torch.Tensor = None, featdata: FeatureDataset = None, feature_type='feature',**kwargs):
+             dino_traj: torch.Tensor = None, dino_visibility: torch.Tensor = None, featdata: FeatureDataset = None, 
+            maskdata: FeatureDataset = None,**kwargs):
         """Initialize MFT on first frame
 
         args:
@@ -52,7 +53,7 @@ class MFT():
         self.dino_traj = dino_traj
         self.dino_visibility = dino_visibility
         self.featdata = featdata
-        self.feature_type = feature_type
+        self.maskdata = maskdata
 
         self.query = query.permute(1, 0).unsqueeze(1).to(self.device) # (xy, 1, N)
         self.query_features = self.sample_features(self.query)
@@ -66,10 +67,17 @@ class MFT():
         normalized_query = (query.permute(1,2,0) / torch.Tensor([self.img_W, self.img_H]).to(self.device)) * 2 - 1 # (1, N, xy)
         featmap = self.featdata[self.current_frame_i] # (C, H, W)
         sampled_features = torch.nn.functional.grid_sample(featmap.unsqueeze(0), normalized_query.unsqueeze(0), mode='bilinear', align_corners=True)[0] # (C, 1, N)
-        if self.feature_type == 'mask':
-            normalized_features = sampled_features
-        else:
-            normalized_features = sampled_features  / torch.norm(sampled_features, dim=0, keepdim=True)
+        
+        normalized_features = sampled_features  / torch.norm(sampled_features, dim=0, keepdim=True)
+        return normalized_features
+    
+    def sample_masks(self, query: torch.Tensor):
+        # query: (xy, 1, N)
+        normalized_query = (query.permute(1,2,0) / torch.Tensor([self.img_W, self.img_H]).to(self.device)) * 2 - 1 # (1, N, xy)
+        featmap = self.maskdata[self.current_frame_i] # (C, H, W)
+        sampled_features = torch.nn.functional.grid_sample(featmap.unsqueeze(0), normalized_query.unsqueeze(0), mode='bilinear', align_corners=True)[0] # (C, 1, N)
+        normalized_features = sampled_features
+        
         return normalized_features
         
         
@@ -139,20 +147,35 @@ class MFT():
         all_flows = torch.stack([result.flow for result in all_results], dim=0)  # (N_delta, xy, H, W)
         all_sigmas = torch.stack([result.sigma for result in all_results], dim=0)  # (N_delta, 1, H, W)
         all_occlusions = torch.stack([result.occlusion for result in all_results], dim=0)  # (N_delta, 1, H, W)
-        # all_occlusions[all_sigmas > 1] = 1
         
-        input_queries = (all_flows + self.query).permute(2,1,0,3)[0] # (xy, N_delta, N)
-        sampled_features = self.sample_features(input_queries) # (C, N_delta, N)
-        # sampled_features = sampled_features.diagonal(dim1=0,dim2=2) # (N_delta, N)
+        dino_flow = (self.dino_traj[0,self.current_frame_i]-self.dino_traj[0,0]).permute(1, 0).unsqueeze(1).to(self.device) # (xy, 1, N)
+        dino_occlusion = (~self.dino_visibility[0,self.current_frame_i].permute(1, 0).unsqueeze(1).to(self.device)).float() # (1, 1, N)
+        # all_occlusions[all_sigmas > 1] = 1
         # import pdb; pdb.set_trace()
-        if self.feature_type == 'feature':
+        input_queries = (torch.cat([all_flows,dino_flow[None,...]]) + self.query).permute(2,1,0,3)[0] # (xy, N_delta, N)
+        
+        
+        if self.featdata is not None:
+            sampled_features = self.sample_features(input_queries) # (C, N_delta+1, N)
+            tracker2_feature = sampled_features[:,-1:] # (C, 1, N)
+            # sampled_features = sampled_features[:,:-1] # (C, N_delta, N)
             similarities = (sampled_features * self.query_features).sum(dim=0)[:,None,None,:] # (N_delta, 1, H, W)
             similarity_threshold = 0.5
-            all_occlusions[similarities < similarity_threshold] = 1
-        else:
-            sampled_features = sampled_features.diagonal(dim1=0,dim2=2) # (N_delta, N)
-            mask_thres = 0.5
-            all_occlusions[sampled_features[:,None,None,:] < mask_thres] = 1
+            # all_occlusions[similarities[:-1] < similarity_threshold] = 1
+            # dino_occlusion[similarities[-1] < similarity_threshold] = 1
+            
+            
+        if self.maskdata is not None:
+            sampled_masks = self.sample_masks(input_queries) # (C, N_delta+1, N)
+            tracker2_mask = sampled_masks[:,-1:] # (C, 1, N)
+            sampled_masks = sampled_masks[:,:-1] # (C, N_delta, N)
+            sampled_masks = sampled_masks.diagonal(dim1=0,dim2=2) # (N_delta, N)
+            mask_thres = 0.01
+            all_occlusions[sampled_masks[:,None,None,:] < mask_thres] = 1
+            
+            # tracker2_feature = tracker2_feature.diagonal(dim1=0,dim2=2) # (1, N)
+            # dino_occlusion[tracker2_feature[None,...] < mask_thres] = 1
+            
         
         
         scores = -all_sigmas
@@ -212,8 +235,7 @@ class MFT():
         
         # result = FlowOUTrackingResult(selected_flow, selected_occlusion, selected_sigmas)
         
-        dino_flow = (self.dino_traj[0,self.current_frame_i]-self.dino_traj[0,0]).permute(1, 0).unsqueeze(1).to(self.device)
-        dino_occlusion = (~self.dino_visibility[0,self.current_frame_i].permute(1, 0).unsqueeze(1).to(self.device)).float()
+        
         
         # import pdb; pdb.set_trace()
         last_flow = self.memory[self.current_frame_i-self.time_direction]['result'].flow

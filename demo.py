@@ -58,7 +58,8 @@ def configure_benchmark(image_data: pklDataset, data_idx: int, frame_idx: int, d
     dino_traj = torch.from_numpy(np.load(os.path.join(dino_folder,f'trajectories/trajectories_{frame_idx}.npy'))).to(DEVICE).permute(1, 0, 2)[None,...].to(DEVICE)
     dino_visibility = ~torch.from_numpy(np.load(os.path.join(dino_folder,f'occlusions/occlusion_preds_{frame_idx}.npy'))).to(DEVICE).permute(1, 0)[None,...,None]
 
-    featdata = FeatureDataset(os.path.join(dino_folder,'dino_embeddings/sam2_mask/all_mask.pt'),type='mask')
+    featdata = FeatureDataset(os.path.join(dino_folder,'dino_embeddings/refined_embed_video.pt'),type='feature')
+    maskdata = FeatureDataset(os.path.join(dino_folder,'dino_embeddings/sam2_mask/all_mask.pt'),type='mask')
     image_data.set_start_frame(frame_idx, direction)
     featdata.set_start_frame(frame_idx, direction)
     if direction == 1:
@@ -67,9 +68,9 @@ def configure_benchmark(image_data: pklDataset, data_idx: int, frame_idx: int, d
     else:
         dino_traj = dino_traj[:,:frame_idx+1].flip(1)
         dino_visibility = dino_visibility[:,:frame_idx+1].flip(1)
-    return dino_traj, dino_visibility, featdata
+    return dino_traj, dino_visibility, featdata, maskdata
     
-def track_slides(tracker: MFT, image_data: pklDataset, featdata: FeatureDataset, dino_traj, dino_visibility):
+def track_slides(tracker: MFT, image_data: pklDataset, featdata: FeatureDataset, maskdata: FeatureDataset, dino_traj, dino_visibility):
     
     initialized = False
     # prepare query points
@@ -93,7 +94,7 @@ def track_slides(tracker: MFT, image_data: pklDataset, featdata: FeatureDataset,
         video.append(frame)
         if not initialized:
             queries = valid_points
-            meta = tracker.init(frame, query = queries, dino_traj = dino_traj, dino_visibility = dino_visibility, featdata=featdata, feature_type='mask')
+            meta = tracker.init(frame, query = queries, dino_traj = dino_traj, dino_visibility = dino_visibility, featdata=featdata, maskdata=maskdata)
             initialized = True
         else:
             # if current_frame>=80: import pdb; pdb.set_trace()
@@ -129,6 +130,17 @@ def track_slides(tracker: MFT, image_data: pklDataset, featdata: FeatureDataset,
     
     for frame_i, frame in enumerate(tqdm(target, total=targetlen)):
         result, coords, occlusions = results[frame_i]
+        post_filter = True
+        if post_filter:
+            # import pdb; pdb.set_trace()
+            pred_flow = result.flow.cuda() # (xy, 1, N)
+            target = pred_flow + tracker.query
+            tracker.current_frame_i = frame_i
+            sampled_features = tracker.sample_features(target) # (C, 1, N)
+            similarities = (sampled_features * tracker.query_features).sum(dim=0) # (1, N)
+            threshold = 0.5
+            
+            occlusions[similarities[0] < threshold] = 1.0
         traj.append(coords+queries)
         occ.append(occlusions)
         
@@ -196,9 +208,9 @@ def run(args):
             print("Evaluating frame ", i)
             if i != video_frame - 1:
                 try:
-                    dino_traj, dino_visibility, featdata = configure_benchmark(image_data, args.data_idx, i, 1)
+                    dino_traj, dino_visibility, featdata, maskdata = configure_benchmark(image_data, args.data_idx, i, 1)
                     dino_traj = dino_traj*torch.Tensor([W/854,H/476]).to(DEVICE)
-                    video, traj, visibility = track_slides(tracker, image_data, featdata, dino_traj, dino_visibility)
+                    video, traj, visibility = track_slides(tracker, image_data, featdata, maskdata, dino_traj, dino_visibility)
                     # traj = dino_traj
                     # visibility = dino_visibility
                     # import pdb; pdb.set_trace()

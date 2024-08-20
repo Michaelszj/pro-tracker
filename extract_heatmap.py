@@ -45,7 +45,7 @@ if __name__ == '__main__':
     valid_points = valid_points[occ_mask == False,:].cuda()
     
     dino_out_dir = os.path.join('./davis_dino',f'{args.idx}','dino_embeddings')
-    target_feature = 'dino'
+    target_feature = 'geo'
     target_file = f'{target_feature}_embed_video.pt'
     heatmap_dir = os.path.join(dino_out_dir,f'{target_feature}_heatmap')
     os.makedirs(heatmap_dir,exist_ok=True)
@@ -62,13 +62,14 @@ if __name__ == '__main__':
         heatmaps = []
         for j in tqdm(range(len(feature))):
             frame_features = F.interpolate(feature[j][None,...],size=(H,W),mode='bilinear',align_corners=True)[0] # (C, H, W)
+            # import pdb; pdb.set_trace()
             frame_features = frame_features / torch.norm(frame_features,dim=0,keepdim=True)
             heatmap = (frame_features * point_features[...,None,None]).sum(dim=0).cpu().numpy() # (H, W)
             
             # import pdb; pdb.set_trace()
             heatmap = cmap(heatmap)[:,:,[2,1,0]] # (H, W, 3)
             heatmap = (heatmap * 255.)
-            origin_image = image_data[j].astype(np.float64)
+            origin_image = image_data[j].astype(np.float64)[:,:,::-1]
             blend_weight = 0.8
             output = heatmap * blend_weight + origin_image * (1 - blend_weight)
             output = output.astype(np.uint8)
