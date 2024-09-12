@@ -19,3 +19,5 @@ Makefile
 /runs/
 tapvid_davis
 /davis_dino
+/kinetics_dino
+/tapvid_benchmark

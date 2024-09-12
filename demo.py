@@ -52,17 +52,19 @@ def parse_arguments():
     logging.getLogger("matplotlib").setLevel(logging.WARNING)
     return args
 
-def configure_benchmark(image_data: pklDataset, data_idx: int, frame_idx: int, direction: int = 1):
+def configure_benchmark(image_data: BenchmarkDataset, data_idx: int, frame_idx: int, direction: int = 1):
     
-    dino_folder = './davis_dino/{:d}'.format(data_idx)
+    dino_folder = f'./kinetics_dino/{image_data.curname()}'
     dino_traj = torch.from_numpy(np.load(os.path.join(dino_folder,f'trajectories/trajectories_{frame_idx}.npy'))).to(DEVICE).permute(1, 0, 2)[None,...].to(DEVICE)
     dino_visibility = ~torch.from_numpy(np.load(os.path.join(dino_folder,f'occlusions/occlusion_preds_{frame_idx}.npy'))).to(DEVICE).permute(1, 0)[None,...,None]
-
-    featdata = FeatureDataset(os.path.join(dino_folder,'dino_embeddings/geo_embed_video.pt'),type='feature')
-    maskdata = FeatureDataset(os.path.join(dino_folder,f'dino_embeddings/sam2_mask/all_mask_{frame_idx}.pt'),type='mask')
     image_data.set_start_frame(frame_idx, direction)
-    featdata.set_start_frame(frame_idx, direction)
-    maskdata.set_start_frame(frame_idx, direction)
+    try:
+        featdata = FeatureDataset(os.path.join(dino_folder,'dino_embeddings/geo_embed_video.pt'),type='feature')
+        maskdata = FeatureDataset(os.path.join(dino_folder,f'dino_embeddings/sam2_mask/all_mask_{frame_idx}.pt'),type='mask')
+        featdata.set_start_frame(frame_idx, direction)
+        maskdata.set_start_frame(frame_idx, direction)
+    except:
+        featdata = maskdata = None
     if direction == 1:
         dino_traj = dino_traj[:,frame_idx:]
         dino_visibility = dino_visibility[:,frame_idx:]
@@ -71,7 +73,7 @@ def configure_benchmark(image_data: pklDataset, data_idx: int, frame_idx: int, d
         dino_visibility = dino_visibility[:,:frame_idx+1].flip(1)
     return dino_traj, dino_visibility, featdata, maskdata
     
-def track_slides(tracker: MFT, image_data: pklDataset, featdata: FeatureDataset, maskdata: FeatureDataset, dino_traj, dino_visibility):
+def track_slides(tracker: MFT, image_data: BenchmarkDataset, featdata: FeatureDataset, maskdata: FeatureDataset, dino_traj, dino_visibility):
     
     initialized = False
     # prepare query points
@@ -159,7 +161,7 @@ def run(args):
 
     if args.data_idx >= 0:
         logger.info("Using data from pkl")
-        image_data = pklDataset(args.video)
+        image_data = BenchmarkDataset(args.video,'./kinetics_dino')
         image_data.switch_to(args.data_idx)
         curname = image_data.curname()
         sample = image_data[0]
@@ -213,9 +215,10 @@ def run(args):
                     dino_traj, dino_visibility, featdata, maskdata = configure_benchmark(image_data, args.data_idx, i, 1)
                     dino_traj = dino_traj*torch.Tensor([W/854,H/476]).to(DEVICE)
                     video, traj, visibility = track_slides(tracker, image_data, featdata, maskdata, dino_traj, dino_visibility)
-                    # traj = dino_traj
-                    # visibility = dino_visibility
+                    traj = dino_traj
+                    visibility = dino_visibility
                     # import pdb; pdb.set_trace()
+                    
                     if query_first:
                         video_save_path = args.out 
                         vis = Visualizer(video_save_path, pointwidth=1 if args.mask else 2)
