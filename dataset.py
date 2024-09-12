@@ -207,9 +207,28 @@ class FeatureDataset(torch.utils.data.Dataset):
         self.device = device
         self.feature_file = feature_file
         self.features: torch.Tensor = self.load_features()# .permute(2,1,0,3,4)[0].float()
+        self.type = type
+        # print(type,' loaded')
         if type == 'mask':
-            self.features = self.features.permute(2,1,0,3,4)[0].float()
+            # import pdb; pdb.set_trace()
+            
+            self.features = self.features.permute(2,1,0,3,4)[0].contiguous()
+            # print('permuted',self.features.device)
+            self.features = self.features.cuda()
+            # print('moved to cuda')
+            self.features = self.features.float()
+            # print('converted to float') 
+            self.features = self.features.cpu()
+            # print('moved to cpu')
+            try:
+                self.point_map_file = self.feature_file.replace('all_mask', 'point_map')
+                self.point_map = torch.load(self.point_map_file)
+            except:
+                self.point_map = torch.arange(self.features.shape[1])
+                
+            # print('Point map loaded')
         # import pdb; pdb.set_trace()
+        
         self.featurelen = len(self.features)
         self.start_frame = 0
         self.direction = 1

@@ -23,7 +23,7 @@ from dataset import pklDataset, FeatureDataset, BenchmarkDataset
 from eval_benchmark import eval_tapvid_frame
 import json
 DEVICE = 'cuda'
-
+benchmark = 'davis'
 logger = logging.getLogger(__name__)
 
 def parse_arguments():
@@ -54,10 +54,11 @@ def parse_arguments():
 
 def configure_benchmark(image_data: BenchmarkDataset, data_idx: int, frame_idx: int, direction: int = 1):
     
-    dino_folder = f'./kinetics_dino/{image_data.curname()}'
+    dino_folder = f'./{benchmark}_dino/{image_data.curname()}'
     dino_traj = torch.from_numpy(np.load(os.path.join(dino_folder,f'trajectories/trajectories_{frame_idx}.npy'))).to(DEVICE).permute(1, 0, 2)[None,...].to(DEVICE)
     dino_visibility = ~torch.from_numpy(np.load(os.path.join(dino_folder,f'occlusions/occlusion_preds_{frame_idx}.npy'))).to(DEVICE).permute(1, 0)[None,...,None]
     image_data.set_start_frame(frame_idx, direction)
+    print('loading feature and mask')
     try:
         featdata = FeatureDataset(os.path.join(dino_folder,'dino_embeddings/geo_embed_video.pt'),type='feature')
         maskdata = FeatureDataset(os.path.join(dino_folder,f'dino_embeddings/sam2_mask/all_mask_{frame_idx}.pt'),type='mask')
@@ -161,7 +162,7 @@ def run(args):
 
     if args.data_idx >= 0:
         logger.info("Using data from pkl")
-        image_data = BenchmarkDataset(args.video,'./kinetics_dino')
+        image_data = BenchmarkDataset(args.video,f'./{benchmark}_dino')
         image_data.switch_to(args.data_idx)
         curname = image_data.curname()
         sample = image_data[0]
@@ -202,7 +203,7 @@ def run(args):
     # vis = Visualizer(video_save_path, pointwidth=1 if args.mask else 2)
     # vis.visualize(video, traj, visibility,filename = f'{video_name}_points')
     
-    query_first = True
+    query_first = False
     if args.data_idx != -1:
         video_frame = image_data.total_frames
         eval_dicts = []
@@ -211,12 +212,13 @@ def run(args):
             # import pdb; pdb.set_trace()
             print("Evaluating frame ", i)
             if i != video_frame - 1:
+                # import pdb; pdb.set_trace()
                 try:
                     dino_traj, dino_visibility, featdata, maskdata = configure_benchmark(image_data, args.data_idx, i, 1)
                     dino_traj = dino_traj*torch.Tensor([W/854,H/476]).to(DEVICE)
                     video, traj, visibility = track_slides(tracker, image_data, featdata, maskdata, dino_traj, dino_visibility)
-                    traj = dino_traj
-                    visibility = dino_visibility
+                    # traj = dino_traj
+                    # visibility = dino_visibility
                     # import pdb; pdb.set_trace()
                     
                     if query_first:
@@ -236,9 +238,11 @@ def run(args):
                     eval_dict = eval_tapvid_frame(trajectory_vis,visibility,gt_trajectory,gt_visibility,frame = i)
                     eval_dicts.append(eval_dict)
                     print(eval_dict)
+                    del featdata, maskdata
                 except:
                     print("Error in frame ", i)
             if i != 0:
+                # import pdb; pdb.set_trace()
                 try:
                     dino_traj, dino_visibility, featdata, maskdata = configure_benchmark(image_data, args.data_idx, i, -1)
                     dino_traj = dino_traj*torch.Tensor([W/854,H/476]).to(DEVICE)
@@ -256,6 +260,7 @@ def run(args):
                     eval_dict = eval_tapvid_frame(trajectory_vis,visibility,gt_trajectory,gt_visibility,frame = i)
                     eval_dicts.append(eval_dict)
                     print(eval_dict)
+                    del featdata, maskdata
                 except:
                     print("Error in frame ", i)
             

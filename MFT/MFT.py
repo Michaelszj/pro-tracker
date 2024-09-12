@@ -155,21 +155,24 @@ class MFT():
         input_queries = (torch.cat([all_flows,dino_flow[None,...]]) + self.query).permute(2,1,0,3)[0] # (xy, N_delta, N)
         
         
-        if self.featdata is not None:
-            sampled_features = self.sample_features(input_queries) # (C, N_delta+1, N)
-            tracker2_feature = sampled_features[:,-1:] # (C, 1, N)
-            # sampled_features = sampled_features[:,:-1] # (C, N_delta, N)
-            similarities = (sampled_features * self.query_features).sum(dim=0)[:,None,None,:] # (N_delta, 1, H, W)
-            similarity_threshold = 0.5
-            # all_occlusions[similarities[:-1] < similarity_threshold] = 1
-            # dino_occlusion[similarities[-1] < similarity_threshold] = 1
+        # if self.featdata is not None:
+        #     sampled_features = self.sample_features(input_queries) # (C, N_delta+1, N)
+        #     tracker2_feature = sampled_features[:,-1:] # (C, 1, N)
+        #     # sampled_features = sampled_features[:,:-1] # (C, N_delta, N)
+        #     similarities = (sampled_features * self.query_features).sum(dim=0)[:,None,None,:] # (N_delta, 1, H, W)
+        #     similarity_threshold = 0.5
+        #     # all_occlusions[similarities[:-1] < similarity_threshold] = 1
+        #     # dino_occlusion[similarities[-1] < similarity_threshold] = 1
             
             
         if self.maskdata is not None:
             sampled_masks = self.sample_masks(input_queries) # (C, N_delta+1, N)
             tracker2_mask = sampled_masks[:,-1:] # (C, 1, N)
             sampled_masks = sampled_masks[:,:-1] # (C, N_delta, N)
-            sampled_masks = sampled_masks.diagonal(dim1=0,dim2=2) # (N_delta, N)
+            point_map = self.maskdata.point_map # (N,)
+            # import pdb; pdb.set_trace()
+            sampled_masks = sampled_masks[point_map, torch.arange(sampled_masks.shape[1]).unsqueeze(1), torch.arange(sampled_masks.shape[2]).unsqueeze(0)]
+            # sampled_masks = sampled_masks.diagonal(dim1=0,dim2=2) # (N_delta, N)
             mask_thres = 0.01
             all_occlusions[sampled_masks[:,None,None,:] < mask_thres] = 1
             
