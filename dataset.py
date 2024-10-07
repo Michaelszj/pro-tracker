@@ -61,7 +61,7 @@ class pklDataset(torch.utils.data.Dataset):
         H, W = self.data[self.seqnames[self.curidx]]['video'].shape[1:3]
         new_size = (480,(480*W)//H)
         self.current_data = resize_tensor(resize_tensor(torch.from_numpy(self.data[self.seqnames[self.curidx]]['video']).to(self.device).float()
-                                                                                     ,(256,256)),new_size).round().int().cpu().numpy()
+                                                                                     ,new_size),new_size).round().int().cpu().numpy()
         self.total_frames = self.current_data.shape[0]
         
     def set_start_frame(self, frame, direction):
@@ -140,9 +140,9 @@ class BenchmarkDataset(torch.utils.data.Dataset):
         return str(self.idxes[self.curidx])
     
     def set_start_frame(self, frame, direction):
-        self.switch_to(self.curidx)
         self.start_frame = frame
         self.direction = direction
+        self.switch_to(self.curidx)
         if direction == 1:
             self.imgs = self.imgs[self.start_frame:]
         else:

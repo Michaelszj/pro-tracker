@@ -21,3 +21,7 @@ tapvid_davis
 /davis_dino
 /kinetics_dino
 /tapvid_benchmark
+/raw_video
+/visualization
+/picture
+/flow_vis

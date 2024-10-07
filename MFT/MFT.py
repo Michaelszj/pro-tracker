@@ -155,14 +155,15 @@ class MFT():
         input_queries = (torch.cat([all_flows,dino_flow[None,...]]) + self.query).permute(2,1,0,3)[0] # (xy, N_delta, N)
         
         
-        # if self.featdata is not None:
-        #     sampled_features = self.sample_features(input_queries) # (C, N_delta+1, N)
-        #     tracker2_feature = sampled_features[:,-1:] # (C, 1, N)
-        #     # sampled_features = sampled_features[:,:-1] # (C, N_delta, N)
-        #     similarities = (sampled_features * self.query_features).sum(dim=0)[:,None,None,:] # (N_delta, 1, H, W)
-        #     similarity_threshold = 0.5
-        #     # all_occlusions[similarities[:-1] < similarity_threshold] = 1
-        #     # dino_occlusion[similarities[-1] < similarity_threshold] = 1
+        if self.featdata is not None:
+            sampled_features = self.sample_features(input_queries) # (C, N_delta+1, N)
+            tracker2_feature = sampled_features[:,-1:] # (C, 1, N)
+            # sampled_features = sampled_features[:,:-1] # (C, N_delta, N)
+            similarities = (sampled_features * self.query_features).sum(dim=0)[:,None,None,:] # (N_delta, 1, H, W)
+            similarity_threshold = 0.7
+            # all_occlusions[similarities[:-1] < similarity_threshold] = 1
+            dino_occlusion[:] = 0
+            dino_occlusion[similarities[-1] < similarity_threshold] = 1
             
             
         if self.maskdata is not None:
@@ -209,10 +210,12 @@ class MFT():
         weight[occluded] = 0
         sum_flow = torch.sum(all_flows * weight, dim=0)
         sum_weight = torch.sum(weight, dim=0)
+        valid_preds = torch.sum((~occluded).float(), dim=0)
         average_flow = sum_flow
         average_flow[:,sum_weight[0] > 0] /= sum_weight[sum_weight > 0] # (xy, H, W)
         new_sigma = torch.zeros_like(sum_weight) # (1, H, W)
         new_sigma[sum_weight > 0] = 1/torch.sqrt(sum_weight[sum_weight > 0]) # (1, H, W)
+        new_sigma = new_sigma * ((valid_preds-1) * 0.25 + 1) # (1, H, W)
         new_occlusion = (~(sum_weight > 0)).float() # (1, H, W)
         # import pdb;pdb.set_trace()
         if self.reverse:
@@ -250,8 +253,10 @@ class MFT():
         flow_mask = (new_occlusion[0] == 1).squeeze()
         average_flow[:,:,flow_mask] = dino_flow[:,:,flow_mask]
         selected_sigmas[:,:,replace_mask] = 0
+        new_sigma[:,:,replace_mask] = 0
         new_occlusion[:,:,replace_mask] = 0
-        result = FlowOUTrackingResult(average_flow, new_occlusion, selected_sigmas)
+        # import pdb; pdb.set_trace()
+        result = FlowOUTrackingResult(average_flow, new_occlusion, new_sigma)
         # replace_mask = torch.logical_and(dino_occlusion[0] == 1, new_occlusion[0] == 0).squeeze()
         # dino_flow[:,:,replace_mask] = average_flow[:,:,replace_mask]
         # dino_occlusion[:,:,replace_mask] = 0

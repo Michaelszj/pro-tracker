@@ -73,7 +73,7 @@ class Visualizer:
         self.save_dir = save_dir
         if mode == "rainbow":
             self.color_map = cm.get_cmap("gist_rainbow")
-        elif mode == "cool":
+        elif mode != "optical_flow":
             self.color_map = cm.get_cmap(mode)
         self.show_first_frame = show_first_frame
         self.grayscale = grayscale
@@ -173,6 +173,9 @@ class Visualizer:
         assert C == 3
         video = video[0].permute(0, 2, 3, 1).byte().detach().cpu().numpy()  # S, H, W, C
         tracks = tracks[0].long().detach().cpu().numpy()  # S, N, 2
+        vis = visibility[0].detach().cpu().numpy() if visibility is not None else None
+        tracks[~vis[:,:,0]] = 0
+        # import pdb; pdb.set_trace()
         if gt_tracks is not None:
             gt_tracks = gt_tracks[0].detach().cpu().numpy()
 
@@ -197,11 +200,18 @@ class Visualizer:
                 for n in range(N):
                     color = self.color_map(norm(tracks[query_frame, n, 1]))
                     color = np.array(color[:3])[None] * 255
+                    color[:,:] = 0
+                    color[:,1] = 255
                     vector_colors[:, n] = np.repeat(color, T, axis=0)
             else:
                 # color changes with time
                 for t in range(T):
-                    color = np.array(self.color_map(t / T)[:3])[None] * 255
+                    x = t/T
+                    if x < 1/3:
+                        x = 2/3 - x
+                    elif x > 2/3:
+                        x = 4/3 - x
+                    color = np.array(self.color_map(x)[:3])[None] * 255
                     vector_colors[t] = np.repeat(color, N, axis=0)
         else:
             if self.mode == "rainbow":
@@ -289,14 +299,16 @@ class Visualizer:
     ):
         T, N, _ = tracks.shape
         rgb = Image.fromarray(np.uint8(rgb))
-        for s in range(T - 1):
+        valid = np.ones((N,), dtype=bool)
+        for s in reversed(range(T - 1)):
             vector_color = vector_colors[s]
             original = rgb.copy()
             alpha = (s / T) ** 2
             for i in range(N):
                 coord_y = (int(tracks[s, i, 0]), int(tracks[s, i, 1]))
                 coord_x = (int(tracks[s + 1, i, 0]), int(tracks[s + 1, i, 1]))
-                if coord_y[0] != 0 and coord_y[1] != 0:
+                if coord_y[0] != 0 and coord_y[1] != 0 and (coord_x[0] != 0 and coord_x[1] != 0) \
+                                    and (tracks[T-1,i,0] != 0 and tracks[T-1,i,1] != 0) and valid[i]:
                     rgb = draw_line(
                         rgb,
                         coord_y,
@@ -304,6 +316,9 @@ class Visualizer:
                         vector_color[i].astype(int),
                         self.linewidth,
                     )
+                else:
+                    valid[i] = False
+                    # import pdb; pdb.set_trace()
             if self.tracks_leave_trace > 0:
                 rgb = Image.fromarray(
                     np.uint8(add_weighted(np.array(rgb), alpha, np.array(original), 1 - alpha, 0))

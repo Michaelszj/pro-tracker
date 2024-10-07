@@ -52,20 +52,24 @@ def parse_arguments():
     logging.getLogger("matplotlib").setLevel(logging.WARNING)
     return args
 
-def configure_benchmark(image_data: BenchmarkDataset, data_idx: int, frame_idx: int, direction: int = 1):
+def configure_benchmark(image_data: pklDataset, data_idx: int, frame_idx: int, direction: int = 1):
     
-    dino_folder = f'./{benchmark}_dino/{image_data.curname()}'
+    dino_folder = f'./{benchmark}_dino/{data_idx}'
     dino_traj = torch.from_numpy(np.load(os.path.join(dino_folder,f'trajectories/trajectories_{frame_idx}.npy'))).to(DEVICE).permute(1, 0, 2)[None,...].to(DEVICE)
     dino_visibility = ~torch.from_numpy(np.load(os.path.join(dino_folder,f'occlusions/occlusion_preds_{frame_idx}.npy'))).to(DEVICE).permute(1, 0)[None,...,None]
     image_data.set_start_frame(frame_idx, direction)
     print('loading feature and mask')
-    try:
-        featdata = FeatureDataset(os.path.join(dino_folder,'dino_embeddings/geo_embed_video.pt'),type='feature')
+    # try:
+    ours = True
+    if ours:
+        featdata = FeatureDataset(os.path.join(dino_folder,'dino_embeddings/refined_embed_video.pt'),type='feature')
         maskdata = FeatureDataset(os.path.join(dino_folder,f'dino_embeddings/sam2_mask/all_mask_{frame_idx}.pt'),type='mask')
         featdata.set_start_frame(frame_idx, direction)
         maskdata.set_start_frame(frame_idx, direction)
-    except:
+    else:
         featdata = maskdata = None
+    # except:
+    # featdata = maskdata = None
     if direction == 1:
         dino_traj = dino_traj[:,frame_idx:]
         dino_visibility = dino_visibility[:,frame_idx:]
@@ -74,7 +78,8 @@ def configure_benchmark(image_data: BenchmarkDataset, data_idx: int, frame_idx: 
         dino_visibility = dino_visibility[:,:frame_idx+1].flip(1)
     return dino_traj, dino_visibility, featdata, maskdata
     
-def track_slides(tracker: MFT, image_data: BenchmarkDataset, featdata: FeatureDataset, maskdata: FeatureDataset, dino_traj, dino_visibility):
+def track_slides(tracker: MFT, image_data: pklDataset, featdata: FeatureDataset, maskdata: FeatureDataset, 
+                 dino_traj, dino_visibility, data_idx = 0, frame_idx = 0, direction = 1):
     
     initialized = False
     # prepare query points
@@ -95,6 +100,7 @@ def track_slides(tracker: MFT, image_data: BenchmarkDataset, featdata: FeatureDa
     
     # track forward
     for frame in tqdm(target, total=targetlen):
+        # import pdb; pdb.set_trace()
         video.append(frame)
         if not initialized:
             queries = valid_points
@@ -132,9 +138,16 @@ def track_slides(tracker: MFT, image_data: BenchmarkDataset, featdata: FeatureDa
     traj = []
     occ = []
     
+    post_filter = True
+    if post_filter:
+        dino_folder = f'./{benchmark}_dino/{data_idx}'
+        featdata = FeatureDataset(os.path.join(dino_folder,'dino_embeddings/geo_embed_video.pt'),type='feature')
+        featdata.set_start_frame(frame_idx, direction)
+        tracker.featdata = featdata
+        tracker.query_features = tracker.sample_features(tracker.query)
     for frame_i, frame in enumerate(tqdm(target, total=targetlen)):
         result, coords, occlusions = results[frame_i]
-        post_filter = True
+        
         if post_filter:
             # import pdb; pdb.set_trace()
             pred_flow = result.flow.cuda() # (xy, 1, N)
@@ -162,7 +175,9 @@ def run(args):
 
     if args.data_idx >= 0:
         logger.info("Using data from pkl")
-        image_data = BenchmarkDataset(args.video,f'./{benchmark}_dino')
+        # image_data = BenchmarkDataset(args.video,f'./{benchmark}_dino')
+        # import pdb; pdb.set_trace()
+        image_data = pklDataset(args.video)
         image_data.switch_to(args.data_idx)
         curname = image_data.curname()
         sample = image_data[0]
@@ -203,7 +218,7 @@ def run(args):
     # vis = Visualizer(video_save_path, pointwidth=1 if args.mask else 2)
     # vis.visualize(video, traj, visibility,filename = f'{video_name}_points')
     
-    query_first = False
+    query_first = True
     if args.data_idx != -1:
         video_frame = image_data.total_frames
         eval_dicts = []
@@ -216,19 +231,29 @@ def run(args):
                 try:
                     dino_traj, dino_visibility, featdata, maskdata = configure_benchmark(image_data, args.data_idx, i, 1)
                     dino_traj = dino_traj*torch.Tensor([W/854,H/476]).to(DEVICE)
-                    video, traj, visibility = track_slides(tracker, image_data, featdata, maskdata, dino_traj, dino_visibility)
+                    video, traj, visibility = track_slides(tracker, image_data, featdata, maskdata, 
+                                                        dino_traj, dino_visibility, args.data_idx, i, 1)
                     # traj = dino_traj
                     # visibility = dino_visibility
+                    
+                    # traj (1,T,N,2)
+                    # visibility (1,T,N,1)
                     # import pdb; pdb.set_trace()
                     
                     if query_first:
-                        video_save_path = args.out 
-                        vis = Visualizer(video_save_path, pointwidth=1 if args.mask else 2)
+                        video_save_path = './visualization' 
+                        vis = Visualizer(video_save_path, pointwidth=1 if args.mask else 6,linewidth=4,tracks_leave_trace=-1,mode='jet')
                         video_name = curname
-
-                        vis.visualize(video, traj, visibility,filename = f'{video_name}_points')
+                        p = 7
+                        if p>=0:
+                            vis.visualize(video, traj[:,:,p:p+1], visibility[:,:,p:p+1],filename = f'{video_name}_points')
+                        else:
+                            vis.visualize(video, traj, visibility,filename = f'{video_name}_points')
                         
                     points, occluded = image_data.get_gt()
+                    occ_mask = torch.from_numpy(occluded[:,0,])
+                    points = points[occ_mask == False,:]
+                    occluded = occluded[occ_mask == False,:]
                     gt_trajectory = (torch.from_numpy(points[...,[1,0]])).to(DEVICE)
                     gt_visibility = (~torch.from_numpy(occluded)).to(DEVICE)
                     our_H, our_W = H, W
@@ -246,11 +271,15 @@ def run(args):
                 try:
                     dino_traj, dino_visibility, featdata, maskdata = configure_benchmark(image_data, args.data_idx, i, -1)
                     dino_traj = dino_traj*torch.Tensor([W/854,H/476]).to(DEVICE)
-                    video, traj, visibility = track_slides(tracker, image_data, featdata, maskdata, dino_traj, dino_visibility)
+                    video, traj, visibility = track_slides(tracker, image_data, featdata, maskdata, 
+                                                           dino_traj, dino_visibility, args.data_idx, i, -1)
                     # traj = dino_traj
                     # visibility = dino_visibility
                     
                     points, occluded = image_data.get_gt()
+                    occ_mask = torch.from_numpy(occluded[:,0,])
+                    points = points[occ_mask == False,:]
+                    occluded = occluded[occ_mask == False,:]
                     gt_trajectory = (torch.from_numpy(points[...,[1,0]])).to(DEVICE)
                     gt_visibility = (~torch.from_numpy(occluded)).to(DEVICE)
                     our_H, our_W = H, W
@@ -309,7 +338,8 @@ def combine_results(eval_dicts):
 
 
 def save_results(eval_dict, video_save_path, curname):
-    with open(f'{video_save_path}/results.json','r') as f:
+    save_results_name = f'{video_save_path}/results.json'
+    with open(save_results_name,'r') as f:
         results_dict = json.load(f)
     results_dict[curname] = {
                             'total':eval_dict['average_rate'],
@@ -340,7 +370,7 @@ def save_results(eval_dict, video_save_path, curname):
                                 'OA':sum([v['OA'] for v in results_dict.values()])/len(results_dict),
                                 'AJ':sum([v['AJ'] for v in results_dict.values()])/len(results_dict)
                                 }
-    with open(f'{video_save_path}/results.json','w') as f:
+    with open(save_results_name,'w') as f:
         json.dump(results_dict,f,indent=4)
         
         
