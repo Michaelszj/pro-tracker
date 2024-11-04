@@ -25,3 +25,6 @@ tapvid_davis
 /visualization
 /picture
 /flow_vis
+/teaser
+/ablation
+/onepoint

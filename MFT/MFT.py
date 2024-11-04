@@ -160,9 +160,10 @@ class MFT():
             tracker2_feature = sampled_features[:,-1:] # (C, 1, N)
             # sampled_features = sampled_features[:,:-1] # (C, N_delta, N)
             similarities = (sampled_features * self.query_features).sum(dim=0)[:,None,None,:] # (N_delta, 1, H, W)
+            similarity_threshold = 0.3
+            all_occlusions[similarities[:-1] < similarity_threshold] = 1
+            # dino_occlusion[:] = 0
             similarity_threshold = 0.7
-            # all_occlusions[similarities[:-1] < similarity_threshold] = 1
-            dino_occlusion[:] = 0
             dino_occlusion[similarities[-1] < similarity_threshold] = 1
             
             
@@ -172,10 +173,12 @@ class MFT():
             sampled_masks = sampled_masks[:,:-1] # (C, N_delta, N)
             point_map = self.maskdata.point_map # (N,)
             # import pdb; pdb.set_trace()
-            sampled_masks = sampled_masks[point_map, torch.arange(sampled_masks.shape[1]).unsqueeze(1), torch.arange(sampled_masks.shape[2]).unsqueeze(0)]
-            # sampled_masks = sampled_masks.diagonal(dim1=0,dim2=2) # (N_delta, N)
+            # sampled_masks = sampled_masks[point_map, torch.arange(sampled_masks.shape[1]).unsqueeze(1), torch.arange(sampled_masks.shape[2]).unsqueeze(0)]
+            sampled_masks = sampled_masks[0] # (N_delta, N)
             mask_thres = 0.01
             all_occlusions[sampled_masks[:,None,None,:] < mask_thres] = 1
+            # tracker2_mask = tracker2_mask.diagonal(dim1=0,dim2=2)[None,...]
+            dino_occlusion[tracker2_mask < mask_thres] = 1
             
             # tracker2_feature = tracker2_feature.diagonal(dim1=0,dim2=2) # (1, N)
             # dino_occlusion[tracker2_feature[None,...] < mask_thres] = 1
@@ -251,6 +254,18 @@ class MFT():
 
         replace_mask = torch.logical_and(dino_occlusion[0] == 0, new_occlusion[0] == 1).squeeze()
         flow_mask = (new_occlusion[0] == 1).squeeze()
+        filter_mask = torch.logical_and(dino_occlusion[0] == 0, new_occlusion[0] == 0).squeeze()
+        flow_corr_dis = (average_flow - dino_flow).norm(dim=0)[None,...] # (1, 1, N)
+        flow_corr_mask = flow_corr_dis < 10.
+        filter_mask = torch.logical_and(filter_mask, flow_corr_mask.squeeze())
+        # average_flow[:,:,filter_mask] = (average_flow[:,:,filter_mask] + dino_flow[:,:,filter_mask]) / 2
+        dino_sigma = 3.
+        dino_weight = 1/(dino_sigma*dino_sigma)
+        flow_weight = 1/torch.square(new_sigma[:,:,filter_mask])
+        dino_weight_norm = dino_weight/(dino_weight+flow_weight)
+        average_flow[:,:,filter_mask] = average_flow[:,:,filter_mask]*(1.-dino_weight_norm) + dino_flow[:,:,filter_mask]*(dino_weight_norm)
+        new_sigma[:,:,filter_mask] = 1/torch.sqrt(dino_weight+flow_weight)
+        
         average_flow[:,:,flow_mask] = dino_flow[:,:,flow_mask]
         selected_sigmas[:,:,replace_mask] = 0
         new_sigma[:,:,replace_mask] = 0

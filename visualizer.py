@@ -174,7 +174,7 @@ class Visualizer:
         video = video[0].permute(0, 2, 3, 1).byte().detach().cpu().numpy()  # S, H, W, C
         tracks = tracks[0].long().detach().cpu().numpy()  # S, N, 2
         vis = visibility[0].detach().cpu().numpy() if visibility is not None else None
-        tracks[~vis[:,:,0]] = 0
+        
         # import pdb; pdb.set_trace()
         if gt_tracks is not None:
             gt_tracks = gt_tracks[0].detach().cpu().numpy()
@@ -200,8 +200,8 @@ class Visualizer:
                 for n in range(N):
                     color = self.color_map(norm(tracks[query_frame, n, 1]))
                     color = np.array(color[:3])[None] * 255
-                    color[:,:] = 0
-                    color[:,1] = 255
+                    # color[:,:] = 0
+                    # color[:,1] = 255
                     vector_colors[:, n] = np.repeat(color, T, axis=0)
             else:
                 # color changes with time
@@ -235,7 +235,7 @@ class Visualizer:
                 color[segm_mask > 0] = np.array(self.color_map(1.0)[:3]) * 255.0
                 color[segm_mask <= 0] = np.array(self.color_map(0.0)[:3]) * 255.0
                 vector_colors = np.repeat(color[None], T, axis=0)
-
+        tracks[~vis[:,:,0]] = 0
         #  draw tracks
         if self.tracks_leave_trace != 0:
             for t in range(query_frame + 1, T):
@@ -303,12 +303,13 @@ class Visualizer:
         for s in reversed(range(T - 1)):
             vector_color = vector_colors[s]
             original = rgb.copy()
-            alpha = (s / T) ** 2
+            alpha = (s / T) ** 0.5
             for i in range(N):
                 coord_y = (int(tracks[s, i, 0]), int(tracks[s, i, 1]))
                 coord_x = (int(tracks[s + 1, i, 0]), int(tracks[s + 1, i, 1]))
                 if coord_y[0] != 0 and coord_y[1] != 0 and (coord_x[0] != 0 and coord_x[1] != 0) \
-                                    and (tracks[T-1,i,0] != 0 and tracks[T-1,i,1] != 0) and valid[i]:
+                                    and (tracks[T-1,i,0] != 0 and tracks[T-1,i,1] != 0) and valid[i] \
+                                    and (coord_y[0] - coord_x[0])**2 + (coord_y[1] - coord_x[1])**2 < 3000:
                     rgb = draw_line(
                         rgb,
                         coord_y,

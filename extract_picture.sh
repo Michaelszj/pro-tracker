@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Source folder containing mp4 files
-source_folder="./picture/nomask_points"
+source_folder="./picture/chosen_sparse_ours"
 
 # Destination folder for extracted images
-destination_folder="./picture/nomask_points"
+destination_folder=$source_folder
 
 # Create the destination folder if it doesn't exist
 mkdir -p "$destination_folder"
