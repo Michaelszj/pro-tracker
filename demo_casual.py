@@ -163,7 +163,7 @@ def run(args):
     # prepare keypoint
     try:
         # import pdb; pdb.set_trace()
-        target = 'dino'
+        target = 'grid'
         traj_path = os.path.join(target_path,f'grid_trajectories/{target}_trajectories.npy')
         occ_path = os.path.join(target_path,f'grid_occlusions/{target}_occlusions.npy')
         dino_traj = torch.from_numpy(np.load(traj_path)).to(DEVICE).permute(1, 0, 2)[None,...].to(DEVICE)
@@ -195,7 +195,7 @@ def run(args):
         
     # prepare query points
     
-    query_points = torch.load(os.path.join(target_path,'sam2_mask/query_sparse.pt'))*torch.Tensor([W,H])
+    query_points = torch.load(os.path.join(target_path,'sam2_mask/query_dense.pt'))*torch.Tensor([W,H])
     video, traj, visibility = track_slides(tracker, image_data, featdata, maskdata, 
                                         dino_traj, dino_visibility, query_points)
     
@@ -211,22 +211,23 @@ def run(args):
     
     video_save_path = os.path.join(target_path,'results')
     os.makedirs(video_save_path,exist_ok=True)
-    vis = Visualizer(video_save_path, pointwidth=3,linewidth=3,tracks_leave_trace=-1,mode='rainbow')
+    vis = Visualizer(video_save_path, pointwidth=1,linewidth=1,tracks_leave_trace=0,mode='rainbow')
     video_name = args.video
     # import pdb; pdb.set_trace()
     # for f in range(video.shape[1]):
     #     video[0,f] = adjust_saturation(video[0,f], 0.5)
     # video = adjust_contrast(video, 0.5)
     p = -1
+    # import pdb; pdb.set_trace()
     if p>=0:
         vis.visualize(video, traj[:,:,p:p+1], visibility[:,:,p:p+1],filename = f'{video_name}_ours')
     else:
-        interval = 3
+        interval = 1
         l = traj.shape[2]
         select = torch.zeros(l,dtype=torch.bool)
         select[::interval] = True
         # visibility[:] = False
-        vis.visualize(video, traj[:,:,select], visibility[:,:,select],filename = f'{video_name}_sparse')
+        vis.visualize(video, traj[:,:,select], visibility[:,:,select],filename = f'{video_name}_ours')
                     
     return 0
 
