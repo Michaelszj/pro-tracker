@@ -171,12 +171,11 @@ class ImageDataset(torch.utils.data.Dataset):
     def __init__(self, img_dir, save_memory = False, device='cuda'):
         self.img_dir = img_dir
         self.device = device
-        self.img_files = sorted(glob.glob(os.path.join(img_dir, 'color', '*')))
+        self.img_files = sorted(glob.glob(os.path.join(img_dir, 'video', '*')))
         self.num_imgs = len(self.img_files)
         self.save_memory = save_memory
         self.images = self.load_imgs()
-        if not self.save_memory:
-            self.images = self.images.to(self.device)
+        self.images = self.images.numpy() # (T, H, W, C)
         
         
         
@@ -184,10 +183,7 @@ class ImageDataset(torch.utils.data.Dataset):
         return self.num_imgs
 
     def __getitem__(self, idx):
-        if self.save_memory:
-            return self.images[idx][None].to(self.device)
-        else:
-            return self.images[idx][None]
+        return self.images[idx]
 
     
     def load_imgs(self):
@@ -196,7 +192,7 @@ class ImageDataset(torch.utils.data.Dataset):
             imfile = self.img_files[i]
             image = Image.open(imfile)
             image = np.array(image).astype(np.uint8)
-            image = torch.from_numpy(image).permute(2, 0, 1).float()
+            image = torch.from_numpy(image).float()
             images.append(image)
         images = torch.stack(images)
         return images

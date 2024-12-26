@@ -64,12 +64,15 @@ class MFT():
     
     def sample_features(self, query: torch.Tensor):
         # query: (xy, 1, N)
-        normalized_query = (query.permute(1,2,0) / torch.Tensor([self.img_W, self.img_H]).to(self.device)) * 2 - 1 # (1, N, xy)
-        featmap = self.featdata[self.current_frame_i] # (C, H, W)
-        sampled_features = torch.nn.functional.grid_sample(featmap.unsqueeze(0), normalized_query.unsqueeze(0), mode='bilinear', align_corners=True)[0] # (C, 1, N)
-        
-        normalized_features = sampled_features  / torch.norm(sampled_features, dim=0, keepdim=True)
-        return normalized_features
+        if self.featdata is not None:
+            normalized_query = (query.permute(1,2,0) / torch.Tensor([self.img_W, self.img_H]).to(self.device)) * 2 - 1 # (1, N, xy)
+            featmap = self.featdata[self.current_frame_i] # (C, H, W)
+            sampled_features = torch.nn.functional.grid_sample(featmap.unsqueeze(0), normalized_query.unsqueeze(0), mode='bilinear', align_corners=True)[0] # (C, 1, N)
+            
+            normalized_features = sampled_features  / torch.norm(sampled_features, dim=0, keepdim=True)
+            return normalized_features
+        else:
+            return None
     
     def sample_masks(self, query: torch.Tensor):
         # query: (xy, 1, N)
@@ -148,12 +151,15 @@ class MFT():
         all_sigmas = torch.stack([result.sigma for result in all_results], dim=0)  # (N_delta, 1, H, W)
         all_occlusions = torch.stack([result.occlusion for result in all_results], dim=0)  # (N_delta, 1, H, W)
         
-        dino_flow = (self.dino_traj[0,self.current_frame_i]-self.dino_traj[0,0]).permute(1, 0).unsqueeze(1).to(self.device) # (xy, 1, N)
-        dino_occlusion = (~self.dino_visibility[0,self.current_frame_i].permute(1, 0).unsqueeze(1).to(self.device)).float() # (1, 1, N)
-        # all_occlusions[all_sigmas > 1] = 1
-        # import pdb; pdb.set_trace()
-        input_queries = (torch.cat([all_flows,dino_flow[None,...]]) + self.query).permute(2,1,0,3)[0] # (xy, N_delta, N)
+        if self.dino_traj is not None:
+            dino_flow = (self.dino_traj[0,self.current_frame_i]-self.dino_traj[0,0]).permute(1, 0).unsqueeze(1).to(self.device) # (xy, 1, N)
+            dino_occlusion = (~self.dino_visibility[0,self.current_frame_i].permute(1, 0).unsqueeze(1).to(self.device)).float() # (1, 1, N)
+            
+        else:
+            dino_flow = torch.zeros_like(all_flows[0]).to(self.device)
+            dino_occlusion = torch.zeros_like(all_occlusions[0]).to(self.device)
         
+        input_queries = (torch.cat([all_flows,dino_flow[None,...]]) + self.query).permute(2,1,0,3)[0] # (xy, N_delta, N)
         
         if self.featdata is not None:
             sampled_features = self.sample_features(input_queries) # (C, N_delta+1, N)
@@ -163,7 +169,7 @@ class MFT():
             similarity_threshold = 0.3
             all_occlusions[similarities[:-1] < similarity_threshold] = 1
             # dino_occlusion[:] = 0
-            similarity_threshold = 0.7
+            similarity_threshold = 0.5
             dino_occlusion[similarities[-1] < similarity_threshold] = 1
             
             
@@ -227,11 +233,10 @@ class MFT():
             prev_sigma = prev_result.sigma
             prev_occlusion = prev_result.occlusion
             change_mask = torch.logical_and(prev_occlusion[0] >= 1.-self.C.occlusion_threshold, new_occlusion[0] <= self.C.occlusion_threshold)
+            change_mask = torch.logical_or(change_mask, torch.logical_and(new_occlusion[0] <= self.C.occlusion_threshold,prev_sigma[0] > new_sigma[0]))
             prev_flow[:,change_mask] = average_flow[:,change_mask]
             prev_sigma[0,change_mask] = selected_sigmas[0,change_mask]
             prev_occlusion[0,change_mask] = 0
-            # if self.current_frame_i == 30:
-            #     import pdb; pdb.set_trace()
             average_flow = prev_flow
             selected_sigmas = prev_sigma
             new_sigma = prev_sigma
@@ -244,41 +249,31 @@ class MFT():
         
         # result = FlowOUTrackingResult(selected_flow, selected_occlusion, selected_sigmas)
         
-        
-        
-        # import pdb; pdb.set_trace()
-        last_flow = self.memory[self.current_frame_i-self.time_direction]['result'].flow
-        last_occlusion = self.memory[self.current_frame_i-self.time_direction]['result'].occlusion
-        flow_consistency_threshold = 0
-        flow_consistency_mask = torch.logical_and(torch.sum(torch.square(last_flow - dino_flow), dim=0, keepdim=True) > flow_consistency_threshold, last_occlusion < self.C.occlusion_threshold)
 
-        replace_mask = torch.logical_and(dino_occlusion[0] == 0, new_occlusion[0] == 1).squeeze()
-        flow_mask = (new_occlusion[0] == 1).squeeze()
-        filter_mask = torch.logical_and(dino_occlusion[0] == 0, new_occlusion[0] == 0).squeeze()
-        flow_corr_dis = (average_flow - dino_flow).norm(dim=0)[None,...] # (1, 1, N)
-        flow_corr_mask = flow_corr_dis < 10.
-        filter_mask = torch.logical_and(filter_mask, flow_corr_mask.squeeze())
-        # average_flow[:,:,filter_mask] = (average_flow[:,:,filter_mask] + dino_flow[:,:,filter_mask]) / 2
-        dino_sigma = 3.
-        dino_weight = 1/(dino_sigma*dino_sigma)
-        flow_weight = 1/torch.square(new_sigma[:,:,filter_mask])
-        dino_weight_norm = dino_weight/(dino_weight+flow_weight)
-        average_flow[:,:,filter_mask] = average_flow[:,:,filter_mask]*(1.-dino_weight_norm) + dino_flow[:,:,filter_mask]*(dino_weight_norm)
-        new_sigma[:,:,filter_mask] = 1/torch.sqrt(dino_weight+flow_weight)
+        if self.dino_traj is not None:
+            # dino_occlusion[:,:,:50] = 1
+            replace_mask = torch.logical_and(dino_occlusion[0] == 0, new_occlusion[0] == 1).squeeze()
+            flow_mask = (new_occlusion[0] == 1).squeeze()
+            filter_mask = torch.logical_and(dino_occlusion[0] == 0, new_occlusion[0] == 0).squeeze()
+            flow_corr_dis = (average_flow - dino_flow).norm(dim=0)[None,...] # (1, 1, N)
+            flow_corr_mask = flow_corr_dis < 10.
+            filter_mask = torch.logical_and(filter_mask, flow_corr_mask.squeeze())
+            # average_flow[:,:,filter_mask] = (average_flow[:,:,filter_mask] + dino_flow[:,:,filter_mask]) / 2
+            dino_sigma = 3.0
+            dino_weight = 1/(dino_sigma*dino_sigma)
+            flow_weight = 1/torch.square(new_sigma[:,:,filter_mask])
+            dino_weight_norm = dino_weight/(dino_weight+flow_weight)
+            average_flow[:,:,filter_mask] = average_flow[:,:,filter_mask]*(1.-dino_weight_norm) + dino_flow[:,:,filter_mask]*(dino_weight_norm)
+            new_sigma[:,:,filter_mask] = 1/torch.sqrt(dino_weight+flow_weight)
+            
+            average_flow[:,:,flow_mask] = dino_flow[:,:,flow_mask]
+            selected_sigmas[:,:,replace_mask] = 0
+            new_sigma[:,:,replace_mask] = 0
+            new_occlusion[:,:,replace_mask] = 0
         
-        average_flow[:,:,flow_mask] = dino_flow[:,:,flow_mask]
-        selected_sigmas[:,:,replace_mask] = 0
-        new_sigma[:,:,replace_mask] = 0
-        new_occlusion[:,:,replace_mask] = 0
         # import pdb; pdb.set_trace()
         result = FlowOUTrackingResult(average_flow, new_occlusion, new_sigma)
-        # replace_mask = torch.logical_and(dino_occlusion[0] == 1, new_occlusion[0] == 0).squeeze()
-        # dino_flow[:,:,replace_mask] = average_flow[:,:,replace_mask]
-        # dino_occlusion[:,:,replace_mask] = 0
-        # dino_sigmas = torch.ones_like(selected_sigmas).to(self.device)
-        # dino_sigmas[:,:,replace_mask] = selected_sigmas[:,:,replace_mask]
-        # result = FlowOUTrackingResult(dino_flow, dino_occlusion, dino_sigmas)
-
+    
         # mark flows pointing outside of the current image as occluded
         invalid_mask = einops.rearrange(result.invalid_mask(self.img_H,self.img_W,self.query), 'H W -> 1 H W')
         result.occlusion[invalid_mask] = 1
@@ -379,6 +374,6 @@ def chain_results(left_result: FlowOUTrackingResult, right_result: FlowOUTrackin
     new_sigma = left_result.warp_backward(right_result.sigma, query)
     sigmas = torch.sqrt(torch.square(left_result.sigma) +
                         torch.square(new_sigma))
-    sigma_threshold = 2.
-    # occlusions[new_sigma>sigma_threshold] = 1
+    sigma_threshold = 5.
+    occlusions[new_sigma>sigma_threshold] = 1
     return FlowOUTrackingResult(flow, occlusions, sigmas)

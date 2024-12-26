@@ -23,14 +23,14 @@ for i in tqdm(range(30)):
     H, W = tmp.shape[:2]
     mesh = torch.stack(torch.meshgrid([torch.arange(0,H),torch.arange(0,W)]),dim=-1)
     
-    density = 20
+    density = 12
     mod_mask = torch.logical_and((mesh[:,:,0] % density)==0,(mesh[:,:,1] % density)==0)
     mask = torch.logical_and(tmp,mod_mask)
     valid_points = torch.nonzero(mask)[...,[1,0]]*torch.tensor([1/W,1/H]).float()
     
     save_dir = os.path.join(path, str(video), 'dino_embeddings','sam2_mask')
     # torch.save(combined_mask, os.path.join(save_dir, 'combined_mask_20.pt'))
-    torch.save(valid_points, os.path.join(save_dir, 'queries_20.pt'))
+    torch.save(valid_points, os.path.join(save_dir, 'queries_12.pt'))
     print(valid_points.shape)
     # import pdb; pdb.set_trace()
     

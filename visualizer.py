@@ -309,7 +309,7 @@ class Visualizer:
                 coord_x = (int(tracks[s + 1, i, 0]), int(tracks[s + 1, i, 1]))
                 if coord_y[0] != 0 and coord_y[1] != 0 and (coord_x[0] != 0 and coord_x[1] != 0) \
                                     and (tracks[T-1,i,0] != 0 and tracks[T-1,i,1] != 0) and valid[i] \
-                                    and (coord_y[0] - coord_x[0])**2 + (coord_y[1] - coord_x[1])**2 < 3000:
+                                    and (coord_y[0] - coord_x[0])**2 + (coord_y[1] - coord_x[1])**2 < 10000:
                     rgb = draw_line(
                         rgb,
                         coord_y,

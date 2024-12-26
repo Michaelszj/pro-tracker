@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Source folder containing mp4 files
-source_folder="./picture/chosen_sparse_ours"
+source_folder="./casual_video"
 
 # Destination folder for extracted images
 destination_folder=$source_folder
@@ -15,9 +15,10 @@ for file in "$source_folder"/*.mp4; do
     base_name=$(basename "$file" .mp4)
 
     # Create a subfolder with the same name as the mp4 file
-    subfolder="$destination_folder/$base_name"
+    subfolder="$destination_folder/$base_name/video"
     mkdir -p "$subfolder"
 
     # Use ffmpeg to extract images at 10 fps
-    ffmpeg -i "$file" -vf "fps=10" -q:v 2 "$subfolder/%04d.jpg"
+    ffmpeg -i "$file" -vf "fps=10" -q:v 2 "$subfolder/%05d.jpg"
+    mv "$file" "$destination_folder/$base_name"
 done

@@ -19,7 +19,7 @@ from MFT.utils.misc import ensure_numpy
 from MFT.MFT import MFT
 from visualizer import Visualizer
 from PIL import Image
-from dataset import pklDataset, FeatureDataset, BenchmarkDataset, resize_tensor
+from dataset import pklDataset, FeatureDataset, BenchmarkDataset, ImageDataset,resize_tensor
 import torchvision.transforms as transforms
 from eval_benchmark import eval_tapvid_frame
 import json
@@ -32,8 +32,8 @@ def parse_arguments():
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('-v', '--verbose', help='', action='store_true')
     parser.add_argument('--gpu', help='cuda device') 
-    parser.add_argument('--video', help='path to a source video (or a directory with images)', type=Path,
-                        default=Path('demo_in/board.mp4'))
+    parser.add_argument('--video', help='path to a source video (or a directory with images)', type=str,
+                        default='board_new')
     parser.add_argument('--edit', help='path to a RGBA png with a first-frame edit', type=Path,
                         default=Path('demo_in/edit.png'))
     parser.add_argument('--config', help='MFT config file', type=Path, default=Path('configs/MFT_cfg.py'))
@@ -75,16 +75,10 @@ def configure_benchmark(image_data: pklDataset, data_idx: int, frame_idx: int, d
         featdata = maskdata = None
     # except:
     # featdata = maskdata = None
-    if direction == 1:
-        dino_traj = dino_traj[:,frame_idx:]
-        dino_visibility = dino_visibility[:,frame_idx:]
-    else:
-        dino_traj = dino_traj[:,:frame_idx+1].flip(1)
-        dino_visibility = dino_visibility[:,:frame_idx+1].flip(1)
     return dino_traj, dino_visibility, featdata, maskdata
     
-def track_slides(tracker: MFT, image_data: pklDataset, featdata: FeatureDataset, maskdata: FeatureDataset, 
-                 dino_traj, dino_visibility, data_idx = 0, frame_idx = 0, direction = 1):
+def track_slides(tracker: MFT, image_data, featdata: FeatureDataset, maskdata: FeatureDataset, 
+                 dino_traj, dino_visibility, query):
     
     initialized = False
     # prepare query points
@@ -95,7 +89,7 @@ def track_slides(tracker: MFT, image_data: pklDataset, featdata: FeatureDataset,
     # occ_mask = torch.from_numpy(occluded[:,0,])
     # valid_points = valid_points[occ_mask == False,:]
     
-    valid_points = torch.load(f'./davis_dino/{data_idx}/dino_embeddings/sam2_mask/queries.pt')*torch.Tensor([W,H])
+    valid_points = query
     # import pdb; pdb.set_trace()
     # prepare image data
     target = image_data
@@ -145,26 +139,9 @@ def track_slides(tracker: MFT, image_data: pklDataset, featdata: FeatureDataset,
     traj = []
     occ = []
     
-    post_filter = False
-    if post_filter:
-        dino_folder = f'./{benchmark}_dino/{data_idx}'
-        featdata = FeatureDataset(os.path.join(dino_folder,'dino_embeddings/geo_embed_video.pt'),type='feature')
-        featdata.set_start_frame(frame_idx, direction)
-        tracker.featdata = featdata
-        tracker.query_features = tracker.sample_features(tracker.query)
     for frame_i, frame in enumerate(tqdm(target, total=targetlen)):
         result, coords, occlusions = results[frame_i]
         
-        if post_filter:
-            # import pdb; pdb.set_trace()
-            pred_flow = result.flow.cuda() # (xy, 1, N)
-            target = pred_flow + tracker.query
-            tracker.current_frame_i = frame_i
-            sampled_features = tracker.sample_features(target) # (C, 1, N)
-            similarities = (sampled_features * tracker.query_features).sum(dim=0) # (1, N)
-            threshold = 0.5
-            
-            occlusions[similarities[0] < threshold] = 1.0
         traj.append(coords+queries)
         occ.append(occlusions)
         
@@ -180,149 +157,77 @@ def run(args):
     logger.info("Tracker loaded")
 
 
-    if args.data_idx >= 0:
-        logger.info("Using data from pkl")
-        # image_data = BenchmarkDataset(args.video,f'./{benchmark}_dino')
+    target_path = os.path.join('./casual_video',args.video)
+    image_data = ImageDataset(target_path)
+    H,W = image_data[0].shape[-3:-1]
+    # prepare keypoint
+    try:
         # import pdb; pdb.set_trace()
-        image_data = pklDataset(args.video)
-        image_data.switch_to(args.data_idx)
-        curname = image_data.curname()
-        sample = image_data[0]
-        H,W = sample.shape[-3:-1]
-    # else:
-    #     target = io_utils.get_video_frames(args.video)
-    #     targetlen = io_utils.get_video_length(args.video)
+        target = 'dino'
+        traj_path = os.path.join(target_path,f'grid_trajectories/{target}_trajectories.npy')
+        occ_path = os.path.join(target_path,f'grid_occlusions/{target}_occlusions.npy')
+        dino_traj = torch.from_numpy(np.load(traj_path)).to(DEVICE).permute(1, 0, 2)[None,...].to(DEVICE)
+        dino_traj = dino_traj*torch.tensor([W/854,H/476]).to(DEVICE)
+        # dino_traj = dino_traj*torch.tensor([W/1080,H/720]).to(DEVICE)
+        # dino_traj = dino_traj.to(DEVICE)
+        dino_visibility = ~torch.from_numpy(np.load(occ_path)).to(DEVICE).permute(1, 0)[None,...,None]
+        print('loaded keypoints')
+    except:
+        dino_traj = dino_visibility = None
+        print('no keypoints founded')
+    # prepare feature and mask
+    try:
+        mask_path = os.path.join(target_path,'sam2_mask/all_mask.pt')
+        maskdata = FeatureDataset(mask_path,type='mask')
+        maskdata.set_start_frame(0,1)
+        print('loaded mask')
+    except:
+        maskdata = None
+        print('no mask founded')
+    try:
+        geo_path = os.path.join(target_path,'dino_embeddings/geo_embed_video.pt')
+        featdata = FeatureDataset(geo_path,type='feature')
+        featdata.set_start_frame(0,1)
+        print('loaded feature')
+    except:
+        featdata = None
+        print('no feature founded')
         
-
-    if args.mask:
-        logger.info("Using mask")
-        density = 4
-        mask_path = os.path.dirname(args.video) + '/mask.png'
-        mask = torch.from_numpy(np.array(Image.open(mask_path)).astype(np.uint8)[:,:,-1])
-        H, W = mask.shape[:2]
-        mesh = torch.stack(torch.meshgrid([torch.arange(0,H),torch.arange(0,W)]),dim=-1)
-        mod_mask = torch.logical_and((mesh[:,:,0] % density)==0,(mesh[:,:,1] % density)==0)
-        mask = torch.logical_and(mask,mod_mask)
-        valid_points = torch.nonzero(mask)[...,[1,0]]
-
+    # prepare query points
     
-    # dino_traj, dino_visibility, featdata = configure_benchmark(image_data, args.data_idx, 0, 1)
-    # dino_traj = dino_traj*torch.Tensor([W/854,H/476]).to(DEVICE)
-    # logger.info("Starting tracking")
-    # video, traj, visibility = track_slides(tracker, image_data, featdata, dino_traj, dino_visibility)
+    query_points = torch.load(os.path.join(target_path,'sam2_mask/query_sparse.pt'))*torch.Tensor([W,H])
+    video, traj, visibility = track_slides(tracker, image_data, featdata, maskdata, 
+                                        dino_traj, dino_visibility, query_points)
     
-        
-    # import pdb; pdb.set_trace()
-    
+    # video = torch.from_numpy(image_data.images).permute(0,3,1,2).cuda()[:,[0,1,2]][None]
     # traj = dino_traj
     # visibility = dino_visibility
+    traj[0,0] = query_points
+    # import pdb; pdb.set_trace()
     
-    # logger.info("Drawing the results")
-    # video_name = args.video.stem
-    # if args.data_idx >= 0:
-    #     video_name = curname
+    # traj (1,T,N,2)
+    # visibility (1,T,N,1)
+    # import pdb; pdb.set_trace()
     
-    # vis = Visualizer(video_save_path, pointwidth=1 if args.mask else 2)
-    # vis.visualize(video, traj, visibility,filename = f'{video_name}_points')
-    
-    query_first = True
-    if args.data_idx != -1:
-        video_frame = image_data.total_frames
-        eval_dicts = []
-        
-        for i in range(0, video_frame, 1000 if query_first else 5):
-            # import pdb; pdb.set_trace()
-            print("Evaluating frame ", i)
-            if i != video_frame - 1:
-                # import pdb; pdb.set_trace()
-                # try:
-                    dino_traj, dino_visibility, featdata, maskdata = configure_benchmark(image_data, args.data_idx, i, 1)
-                    dino_traj = dino_traj*torch.Tensor([W/854,H/476]).to(DEVICE)
-                    # dino_traj = dino_traj*torch.Tensor([W,H]).to(DEVICE)
-                    # import pdb; pdb.set_trace()
-                    video, traj, visibility = track_slides(tracker, image_data, featdata, maskdata, 
-                                                        dino_traj, dino_visibility, args.data_idx, i, 1)
+    video_save_path = os.path.join(target_path,'results')
+    os.makedirs(video_save_path,exist_ok=True)
+    vis = Visualizer(video_save_path, pointwidth=3,linewidth=3,tracks_leave_trace=-1,mode='rainbow')
+    video_name = args.video
+    # import pdb; pdb.set_trace()
+    # for f in range(video.shape[1]):
+    #     video[0,f] = adjust_saturation(video[0,f], 0.5)
+    # video = adjust_contrast(video, 0.5)
+    p = -1
+    if p>=0:
+        vis.visualize(video, traj[:,:,p:p+1], visibility[:,:,p:p+1],filename = f'{video_name}_ours')
+    else:
+        interval = 3
+        l = traj.shape[2]
+        select = torch.zeros(l,dtype=torch.bool)
+        select[::interval] = True
+        # visibility[:] = False
+        vis.visualize(video, traj[:,:,select], visibility[:,:,select],filename = f'{video_name}_sparse')
                     
-                    # video = torch.from_numpy(image_data.current_data).cuda().permute(0,3,1,2)[:,[0,1,2]][None]
-                    # traj = dino_traj
-                    # visibility = dino_visibility
-                    
-                    # traj (1,T,N,2)
-                    # visibility (1,T,N,1)
-                    # import pdb; pdb.set_trace()
-                    
-                    if query_first:
-                        video_save_path = './visualization/mask_points' 
-                        vis = Visualizer(video_save_path, pointwidth=1,linewidth=1,tracks_leave_trace=0,mode='rainbow')
-                        video_name = curname
-                        # import pdb; pdb.set_trace()
-                        # for f in range(video.shape[1]):
-                        #     video[0,f] = adjust_saturation(video[0,f], 0.5)
-                        # video = adjust_contrast(video, 0.5)
-                        p = -1
-                        if p>=0:
-                            vis.visualize(video, traj[:,:,p:p+1], visibility[:,:,p:p+1],filename = f'{video_name}_points')
-                        else:
-                            interval = 1
-                            l = traj.shape[2]
-                            select = torch.zeros(l,dtype=torch.bool)
-                            select[::interval] = True
-                            
-                            
-                            vis.visualize(video, traj[:,:,select], visibility[:,:,select],filename = f'{video_name}_points')
-                        
-                    # points, occluded = image_data.get_gt()
-                    # occ_mask = torch.from_numpy(occluded[:,0,])
-                    # points = points[occ_mask == False,:]
-                    # occluded = occluded[occ_mask == False,:]
-                    # gt_trajectory = (torch.from_numpy(points[...,[1,0]])).to(DEVICE)
-                    # gt_visibility = (~torch.from_numpy(occluded)).to(DEVICE)
-                    # our_H, our_W = H, W
-                    # trajectory_vis = (traj[0,:,:,[1,0]]*torch.Tensor([1/our_H,1/our_W]).to(DEVICE)).permute(1,0,2)
-                    # visibility = visibility[0,:,:,0].permute(1,0)
-                    
-                    # eval_dict = eval_tapvid_frame(trajectory_vis,visibility,gt_trajectory,gt_visibility,frame = i)
-                    # eval_dicts.append(eval_dict)
-                    # print(eval_dict)
-                    del featdata, maskdata
-                # except:
-                #     print("Error in frame ", i)
-            if i != 0:
-                # import pdb; pdb.set_trace()
-                try:
-                    dino_traj, dino_visibility, featdata, maskdata = configure_benchmark(image_data, args.data_idx, i, -1)
-                    dino_traj = dino_traj*torch.Tensor([W/854,H/476]).to(DEVICE)
-                    video, traj, visibility = track_slides(tracker, image_data, featdata, maskdata, 
-                                                           dino_traj, dino_visibility, args.data_idx, i, -1)
-                    # traj = dino_traj
-                    # visibility = dino_visibility
-                    
-                    points, occluded = image_data.get_gt()
-                    occ_mask = torch.from_numpy(occluded[:,0,])
-                    points = points[occ_mask == False,:]
-                    occluded = occluded[occ_mask == False,:]
-                    gt_trajectory = (torch.from_numpy(points[...,[1,0]])).to(DEVICE)
-                    gt_visibility = (~torch.from_numpy(occluded)).to(DEVICE)
-                    our_H, our_W = H, W
-                    trajectory_vis = (traj[0,:,:,[1,0]]*torch.Tensor([1/our_H,1/our_W]).to(DEVICE)).permute(1,0,2)
-                    visibility = visibility[0,:,:,0].permute(1,0)
-                    
-                    eval_dict = eval_tapvid_frame(trajectory_vis,visibility,gt_trajectory,gt_visibility,frame = i)
-                    eval_dicts.append(eval_dict)
-                    print(eval_dict)
-                    del featdata, maskdata
-                except:
-                    print("Error in frame ", i)
-            
-        
-        
-        # eval_dict = combine_results(eval_dicts)
-        # # print(eval_dict)
-        # video_save_path = args.out 
-        # save_results(eval_dict,video_save_path,curname)
-
-        
-    
     return 0
 
 def combine_results(eval_dicts):
