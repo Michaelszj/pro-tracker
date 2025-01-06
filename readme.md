@@ -39,6 +39,7 @@ Create and activate a new virtual environment:
 ```bash
 conda create -n protracker python=3.10
 conda activate protracker
+# TODO: configure the environment
 ```
 
     
@@ -46,11 +47,32 @@ conda activate protracker
 
 ## Run the demo
 
-Simply running:
+Put the target video under /casual_video and run:
+```bash
+# extract pictures from video
+bash extract_picture.sh
 
-    python demo.py
+# modify the name to your video
+name=your_video
 
-should produce a `demo_out` directory with two visualizations.
+# get object-level mask for target and generate queries
+cd ./thrid-party/modified_sam2
+python extract_casual.py --data-dir ./casual_video/$name
+
+# generate video fature
+cd ../modified_geo
+python get_video_feature.py --video_path ./casual_video/$name
+
+# generate long-term keypoints from DINO-Tracker
+cd ../modified_dino
+bash process_casual.sh $name
+
+# protracker
+cd ../../
+python demo_casual.py --video $name
+
+```
+The results are saved under ./casual_video/$name/results
 
 
 
