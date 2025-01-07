@@ -80,6 +80,7 @@ python extract_casual.py --data-dir ./casual_video/$name
 
 # generate long-term keypoints (Optional)
 cd ../modified_dino
+export PYTHONPATH=`(cd ../ && pwd)`:`pwd`:$PYTHONPATH
 bash process_casual.sh $name
 
 # protracker

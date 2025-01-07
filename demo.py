@@ -246,13 +246,14 @@ def run(args):
                     # video = torch.from_numpy(image_data.current_data).cuda().permute(0,3,1,2)[:,[0,1,2]][None]
                     # traj = dino_traj
                     # visibility = dino_visibility
+                    # visibility[:] = False
                     
                     # traj (1,T,N,2)
                     # visibility (1,T,N,1)
                     # import pdb; pdb.set_trace()
                     
                     if query_first:
-                        video_save_path = './visualization/mask_points' 
+                        video_save_path = './visualization/original' 
                         vis = Visualizer(video_save_path, pointwidth=1,linewidth=1,tracks_leave_trace=0,mode='rainbow')
                         video_name = curname
                         # import pdb; pdb.set_trace()

@@ -202,6 +202,8 @@ def run(args):
     # video = torch.from_numpy(image_data.images).permute(0,3,1,2).cuda()[:,[0,1,2]][None]
     # traj = dino_traj
     # visibility = dino_visibility
+    # visibility[:] = False
+    
     traj[0,0] = query_points
     # import pdb; pdb.set_trace()
     
