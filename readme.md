@@ -1,7 +1,7 @@
 
 # ProTracker: Probabilistic Integration for Robust and Accurate Point Tracking 
 
-[Project Page](https://https://michaelszj.github.io/protracker)
+[Project Page](https://michaelszj.github.io/protracker)
 [Arxiv](https://arxiv.org/abs/2501.03220)
 
 Official implementation of the ProTracker from the paper
@@ -14,7 +14,7 @@ Clone this repo and the dependencies:
 git clone https://github.com/Michaelszj/pro-tracker
 cd pro-tracker
 mkdir casual_video
-mkdir thrid-party
+mkdir third-party
 cd third-party
 # feel free to try other off-the-shelf tools as input
 # modified DINO-tracker (Optional)
@@ -24,7 +24,7 @@ cd modified_dino
 ln -s ../../casual_video ./casual_video
 cd ..
 # feature extractor (Optional)
-# Due to package conflict, please follow the instruction at https://github.com/Junyi42/GeoAware-SC to configure its envirionment.
+# Due to package conflict, please follow the instruction at https://github.com/Junyi42/GeoAware-SC to configure its environment.
 git clone https://github.com/Michaelszj/modified_geo
 cd modified_geo
 ln -s ../../casual_video ./casual_video
