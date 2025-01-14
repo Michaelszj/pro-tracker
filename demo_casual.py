@@ -174,7 +174,7 @@ def run(args):
         print('loaded keypoints')
     except:
         dino_traj = dino_visibility = None
-        print('no keypoints founded')
+        print('no keypoints found')
     # prepare feature and mask
     try:
         mask_path = os.path.join(target_path,'sam2_mask/all_mask.pt')
@@ -183,7 +183,7 @@ def run(args):
         print('loaded mask')
     except:
         maskdata = None
-        print('no mask founded')
+        print('no mask found')
     try:
         geo_path = os.path.join(target_path,'dino_embeddings/geo_embed_video.pt')
         featdata = FeatureDataset(geo_path,type='feature')
@@ -191,7 +191,7 @@ def run(args):
         print('loaded feature')
     except:
         featdata = None
-        print('no feature founded')
+        print('no feature found)
         
     # prepare query points
     
