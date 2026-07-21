@@ -14,7 +14,7 @@ class Config():
         return Config()
 
     def __bool__(self):
-        # the truth value should be false to accomodate for inexistent config values
+        # the truth value should be false to accommodate for inexistent config values
         # e.g. C.foo.bar.baz == False if foo, foo.bar, or foo.bar.baz is not in config
         return False
 
